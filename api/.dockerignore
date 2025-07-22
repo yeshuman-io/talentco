@@ -1,38 +1,52 @@
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-.Python
-env
-pip-log.txt
-pip-delete-this-directory.txt
-.tox
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.log
-.git
-.mypy_cache
-.pytest_cache
-.hypothesis
+# Ignore node_modules and other dependency directories
+node_modules
+bower_components
+vendor
 
-.DS_Store
+# Ignore logs and temporary files
+*.log
+*.tmp
+*.swp
+
+# Ignore .env files and other environment files
+.env
+.env.*
+*.local
+
+# Ignore git-related files
+.git
+.gitignore
+
+# Ignore Docker-related files and configs
+.dockerignore
+docker-compose.yml
+
+# Ignore build and cache directories
+dist
+build
+.cache
+__pycache__
+
+# Ignore IDE and editor configurations
 .vscode
 .idea
+*.sublime-project
+*.sublime-workspace
+.DS_Store  # macOS-specific
 
-# Local development files
-.env
+# Ignore test and coverage files
+coverage
+*.coverage
+*.test.js
+*.spec.js
+tests
+
+# Django specific
 db.sqlite3
-*.sqlite3
+db.sqlite3-journal
+media/
 staticfiles/
 
-# Node modules if any
-node_modules/
-npm-debug.log*
-
-# Logs
-logs/
-*.log 
+# LangGraph specific
+.langgraph_api/
+*.pckl 

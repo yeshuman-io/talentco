@@ -1,7 +1,13 @@
 {
-  "dependencies": ["."],
   "graphs": {
     "agent": "./graphs/agent.py:graph"
   },
-  "env": ".env"
+  "env": {
+    "DJANGO_SETTINGS_MODULE": "talentco.settings",
+    "PYTHONPATH": "."
+  },
+  "env_file": ".env",
+  "dependencies": [
+    "."
+  ]
 } 

@@ -1,11 +1,10 @@
+[variables]
+PYTHONPATH = "/app/api"
+NIXPACKS_METADATA = "python,uv,nodejs"
+
 [phases.setup]
-nixPkgs = ['...', 'postgresql']
+nixPkgs = ["python312", "uv", "nodejs"]
 
 [phases.install]
-cmds = ['uv sync']
-
-[phases.build]
-cmds = ['python manage.py collectstatic --noinput']
-
-[start]
-cmd = 'python manage.py migrate && daphne talentco.asgi:application --port $PORT --bind 0.0.0.0' 
+dependsOn = ["setup"]
+cmds = ["uv sync --frozen"] 
