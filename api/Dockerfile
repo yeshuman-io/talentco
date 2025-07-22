@@ -27,10 +27,7 @@ COPY . /deps/api
 # Set working directory
 WORKDIR /deps/api
 
-# Remove any pre-installed LangGraph packages that might conflict with our lockfile
-RUN pip uninstall -y langgraph langgraph-sdk langchain langchain-core langchain-openai langchain-community || true
-
-# Install exact dependencies from lockfile (this should install LangGraph 0.5.3)
+# Install exact dependencies from lockfile
 RUN uv sync --frozen --no-dev
 
 # Set the graph configuration for talentco agent
