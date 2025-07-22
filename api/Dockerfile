@@ -27,8 +27,8 @@ COPY . /deps/api
 # Set working directory
 WORKDIR /deps/api
 
-# Install exact dependencies from lockfile
-RUN uv sync --frozen --no-dev
+# Install dependencies to system Python (not virtual env)
+RUN uv pip install --system --no-cache-dir .
 
 # Set the graph configuration for talentco agent
 ENV LANGSERVE_GRAPHS='{"agent": "/deps/api/graphs/agent.py:graph"}'
