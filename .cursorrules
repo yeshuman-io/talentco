@@ -1,0 +1,121 @@
+# Cursor Rules for TalentCo - Deployment Safety & Best Practices
+
+## 🐳 DOCKER & DEPLOYMENT RULES
+
+### Base Image Selection
+- ALWAYS use simple, clean base images (python:X.Y-slim) instead of complex pre-built containers
+- NEVER use vendor-specific containers (langchain/langgraph-api) unless absolutely necessary
+- ALWAYS match the Python version between local development and deployment environments
+- When in doubt, choose the simplest base image that meets requirements
+
+### Environment Parity
+- ALWAYS ensure local Python version matches deployment Python version exactly
+- ALWAYS test deployment locally with Docker before pushing to production
+- NEVER assume vendor containers work the same as local environments
+- ALWAYS verify that `docker build` and `docker run` work locally before deploying
+
+### Dependency Management
+- ALWAYS install dependencies AND the current project as a package in containers
+- Pattern: `RUN uv sync --frozen --no-dev` THEN `RUN uv pip install --system --no-cache-dir .`
+- NEVER skip installing the current project as a package (`pip install .` or equivalent)
+- ALWAYS use lockfiles (uv.lock, requirements.txt with versions) for reproducible builds
+
+### Configuration Management
+- NEVER duplicate startup commands between Dockerfile CMD and deployment configs (railway.json, docker-compose.yml)
+- ALWAYS use Dockerfile CMD for application startup, deployment configs only for build/deploy settings
+- ALWAYS use consistent paths - if Dockerfile uses WORKDIR /app, all configs should use /app
+- NEVER mix /app, /deps/api, /usr/src/app paths in the same project
+
+## 🔧 DEBUGGING & TROUBLESHOOTING RULES
+
+### Systematic Debugging
+- ALWAYS start by comparing working local environment vs failing deployment environment
+- ALWAYS check Python versions, package versions, and import paths when debugging deployment issues
+- NEVER add complex workarounds without understanding the root cause first
+- ALWAYS trace error messages to their exact source files and line numbers
+
+### Simplification Over Workarounds
+- WHEN facing complex container issues, prefer switching to simpler base images over adding workarounds
+- NEVER add more than 2 workarounds without questioning if the approach is fundamentally wrong
+- ALWAYS ask "can we solve this by simplifying rather than adding complexity?"
+- PREFER rebuilding with clean approach over patching broken complex setup
+
+### Early Testing
+- ALWAYS test Docker builds locally after making Dockerfile changes
+- ALWAYS verify the container can start and import all required modules before deploying
+- NEVER push Dockerfile changes without local Docker testing
+- ALWAYS check that the application actually works in the container, not just builds
+
+## 📦 PACKAGE & IMPORT RULES
+
+### Import Safety
+- ALWAYS test that project modules can be imported after Docker build
+- NEVER assume project code is automatically importable without proper installation
+- ALWAYS include both dependency installation AND project package installation
+- WHEN seeing ModuleNotFoundError in containers, check if project was installed as package
+
+### Version Management
+- ALWAYS pin dependency versions in production (use lockfiles)
+- NEVER rely on "latest" or unpinned versions in Dockerfiles
+- ALWAYS check for version conflicts between pre-installed and user-installed packages
+- WHEN using pre-built containers, verify no package conflicts exist
+
+## 🚀 LANGRAPH & API RULES
+
+### LangGraph Deployment
+- PREFER using `langgraph dev` with clean Python containers over pre-built LangGraph containers
+- NEVER assume pre-built LangGraph containers work without testing circular imports
+- ALWAYS verify that `langgraph dev` provides the same API endpoints as complex containers
+- REMEMBER: langgraph CLI comes with pip install, provides full API server functionality
+
+### Container Selection
+- QUESTION any specialized container that adds more than core dependencies
+- PREFER python:X.Y-slim + pip install over vendor-specific containers
+- ONLY use specialized containers if they provide proven, irreplaceable functionality
+- ALWAYS verify that complex containers don't have known bugs (circular imports, version conflicts)
+
+## 🎯 RAILWAY/PLATFORM SPECIFIC RULES
+
+### Railway Configuration
+- NEVER duplicate startup logic between railway.json startCommand and Dockerfile CMD
+- USE railway.json for build configuration, Dockerfile for runtime configuration
+- ALWAYS ensure path consistency between Dockerfile WORKDIR and any railway.json paths
+- PREFER letting Dockerfile CMD handle startup over railway.json startCommand
+
+### Environment Variables
+- ALWAYS set environment variables that match local working configuration
+- NEVER assume deployment platform environment matches local environment
+- ALWAYS check that required environment variables (DATABASE_URL, API keys) are properly set
+- PREFER explicit environment variable setting over relying on platform defaults
+
+## 🧪 TESTING RULES
+
+### Deployment Testing
+- ALWAYS test full deployment flow locally with Docker before pushing
+- ALWAYS verify that the exact same commands work in Docker as work locally
+- NEVER skip testing the actual application functionality in the container
+- ALWAYS test database connections, migrations, and API startup in Docker
+
+### Rollback Strategy
+- ALWAYS keep previous working Dockerfile/configs in git history for quick rollback
+- NEVER make multiple complex changes simultaneously
+- ALWAYS make one change at a time when debugging deployment issues
+- PREFER small, incremental fixes over large architectural changes
+
+## 🚨 RED FLAGS - STOP AND RECONSIDER
+
+- STOP if you're adding more than 3 workarounds to make a base image work
+- STOP if local and deployment environments use different Python versions
+- STOP if you're manually patching vendor container bugs (circular imports, etc.)
+- STOP if configuration is duplicated across multiple files
+- STOP if you can't explain why a complex base image is necessary
+- STOP if "it works locally" but fails in deployment - find the environment difference
+
+## ✅ GREEN FLAGS - GOOD PATTERNS
+
+- ✅ Simple Dockerfile with clear, single-purpose steps
+- ✅ Local and deployment environments match exactly
+- ✅ All dependencies and project installed properly
+- ✅ Single source of truth for startup commands
+- ✅ Can explain every line in Dockerfile and its necessity
+- ✅ Docker build + run works locally before deploying 
