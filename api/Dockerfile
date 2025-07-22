@@ -5,10 +5,15 @@ ENV UV_SYSTEM_PYTHON=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
 # Install Node.js 22 LTS and npm for UI compilation using NodeSource (most reliable for mixed environments)
+# ALSO install pgvector system dependencies
 RUN apt-get update && \
     apt-get install -y ca-certificates curl gnupg && \
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs && \
+    apt-get install -y --no-install-recommends \
+        postgresql-client \
+        libpq-dev \
+        build-essential && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
     node --version && \
