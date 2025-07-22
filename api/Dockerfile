@@ -27,6 +27,9 @@ RUN uv sync --frozen --no-dev
 # Copy application code
 COPY . .
 
+# Install the current project as a package (needed for imports and LangGraph compatibility)
+RUN uv pip install --system --no-cache-dir .
+
 # Set environment variables for production
 ENV DJANGO_SETTINGS_MODULE=talentco.settings
 ENV PYTHONPATH=/app
