@@ -30,6 +30,12 @@ WORKDIR /deps/api
 # Install dependencies to system Python (not virtual env)
 RUN uv pip install --system --no-cache-dir .
 
+# CRITICAL: Remove problematic container licensing module that has circular import
+RUN rm -rf /api/langgraph_license || true
+
+# Force our Python packages to take precedence over container's built-in packages
+ENV PYTHONPATH="/usr/local/lib/python3.11/site-packages:/deps/api:$PYTHONPATH"
+
 # Set the graph configuration for talentco agent
 ENV LANGSERVE_GRAPHS='{"agent": "/deps/api/graphs/agent.py:graph"}'
 
