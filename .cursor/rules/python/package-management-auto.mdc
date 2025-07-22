@@ -1,0 +1,44 @@
+---
+description: 
+globs: pyproject.toml, requirements.txt, uv.lock, setup.py, setup.cfg
+alwaysApply: false
+---
+
+# Python Package Management Rules
+
+## Import Safety
+- ALWAYS test that project modules can be imported after Docker build
+- NEVER assume project code is automatically importable without proper installation
+- ALWAYS include both dependency installation AND project package installation
+- WHEN seeing ModuleNotFoundError in containers, check if project was installed as package
+
+## Version Management
+- ALWAYS pin dependency versions in production (use lockfiles)
+- NEVER rely on "latest" or unpinned versions in Dockerfiles
+- ALWAYS check for version conflicts between pre-installed and user-installed packages
+- WHEN using pre-built containers, verify no package conflicts exist
+
+## LangGraph Deployment
+- PREFER using `langgraph dev` with clean Python containers over pre-built LangGraph containers
+- NEVER assume pre-built LangGraph containers work without testing circular imports
+- ALWAYS verify that `langgraph dev` provides the same API endpoints as complex containers
+
+## Examples
+
+<example>
+# Good pyproject.toml pattern
+[project]
+dependencies = [
+    "django>=4.2.0,<5.0",
+    "langgraph>=0.2.0,<0.3.0",
+    "pgvector>=0.3.2"
+]
+</example>
+
+<example type="invalid">
+# Bad - unpinned versions
+dependencies = [
+    "django",  # No version constraint
+    "langgraph"  # Could break on updates
+]
+</example>

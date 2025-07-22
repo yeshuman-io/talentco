@@ -1,0 +1,36 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+
+# Rollback Strategy for Deployment Issues
+
+## Rollback Strategy
+- ALWAYS keep previous working Dockerfile/configs in git history for quick rollback
+- NEVER make multiple complex changes simultaneously
+- ALWAYS make one change at a time when debugging deployment issues
+- PREFER small, incremental fixes over large architectural changes
+
+## Deployment Testing
+- ALWAYS test full deployment flow locally with Docker before pushing
+- ALWAYS verify that the exact same commands work in Docker as work locally
+- NEVER skip testing the actual application functionality in the container
+- ALWAYS test database connections, migrations, and API startup in Docker
+
+## Examples
+
+<example>
+# Good incremental approach
+1. Make single focused change
+2. Test locally with Docker
+3. Deploy to staging
+4. Verify functionality
+5. If successful, proceed to next change
+</example>
+
+<example type="invalid">
+# Bad - multiple simultaneous changes
+- Changed base image AND updated dependencies AND modified startup commands
+# Makes it impossible to isolate which change broke deployment
+</example>

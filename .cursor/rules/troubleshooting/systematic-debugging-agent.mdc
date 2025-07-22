@@ -1,0 +1,42 @@
+---
+description: Apply systematic debugging approach when troubleshooting deployment failures, environment mismatches, or circular import errors. Essential for comparing local vs deployed environments and finding root causes.
+globs: 
+alwaysApply: false
+---
+
+# Systematic Debugging for Deployment Issues
+
+## Debugging Process
+- ALWAYS start by comparing working local environment vs failing deployment environment
+- ALWAYS check Python versions, package versions, and import paths when debugging deployment issues
+- NEVER add complex workarounds without understanding the root cause first
+- ALWAYS trace error messages to their exact source files and line numbers
+
+## Simplification Over Workarounds
+- WHEN facing complex container issues, prefer switching to simpler base images over adding workarounds
+- NEVER add more than 2 workarounds without questioning if the approach is fundamentally wrong
+- ALWAYS ask "can we solve this by simplifying rather than adding complexity?"
+- PREFER rebuilding with clean approach over patching broken complex setup
+
+## Red Flags - Stop and Reconsider
+- STOP if you're adding more than 3 workarounds to make a base image work
+- STOP if local and deployment environments use different Python versions
+- STOP if you're manually patching vendor container bugs (circular imports, etc.)
+- STOP if "it works locally" but fails in deployment - find the environment difference
+
+## Examples
+
+<example>
+# Good debugging approach
+1. Compare local Python version (python --version)
+2. Compare deployed Python version from logs
+3. Check if project is installed as package in container
+4. Verify environment variables match
+5. Test exact same commands locally with Docker
+</example>
+
+<example type="invalid">
+# Bad debugging - adding workarounds without understanding
+RUN echo "def check_license_periodically(): pass" > /api/langgraph_license/validation.py
+# This patches symptoms, not root cause
+</example>

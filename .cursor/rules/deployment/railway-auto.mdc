@@ -1,0 +1,44 @@
+---
+description: 
+globs: railway.json, railway.toml, .railway/*
+alwaysApply: false
+---
+
+# Railway Configuration Rules
+
+## Railway Configuration
+- NEVER duplicate startup logic between railway.json startCommand and Dockerfile CMD
+- USE railway.json for build configuration, Dockerfile for runtime configuration
+- ALWAYS ensure path consistency between Dockerfile WORKDIR and any railway.json paths
+- PREFER letting Dockerfile CMD handle startup over railway.json startCommand
+
+## Environment Variables
+- ALWAYS set environment variables that match local working configuration
+- NEVER assume deployment platform environment matches local environment
+- ALWAYS check that required environment variables (DATABASE_URL, API keys) are properly set
+- PREFER explicit environment variable setting over relying on platform defaults
+
+## Examples
+
+<example>
+# Good railway.json - minimal, no startup duplication
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "buildCommand": "uv sync --frozen"
+  },
+  "deploy": {
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
+}
+</example>
+
+<example type="invalid">
+# Bad - duplicates Dockerfile CMD
+{
+  "deploy": {
+    "startCommand": "python manage.py runserver"
+  }
+}
+</example>

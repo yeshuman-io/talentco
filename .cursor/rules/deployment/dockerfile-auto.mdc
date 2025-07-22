@@ -1,0 +1,38 @@
+---
+description: 
+globs: Dockerfile, Dockerfile.*, **/Dockerfile, **/Dockerfile.*
+alwaysApply: false
+---
+
+# Dockerfile Best Practices
+
+## Configuration Management
+- NEVER duplicate startup commands between Dockerfile CMD and deployment configs (railway.json, docker-compose.yml)
+- ALWAYS use Dockerfile CMD for application startup, deployment configs only for build/deploy settings
+- ALWAYS use consistent paths - if Dockerfile uses WORKDIR /app, all configs should use /app
+- NEVER mix /app, /deps/api, /usr/src/app paths in the same project
+
+## Build Optimization
+- Copy dependency files first for better Docker layer caching
+- Install system dependencies in a single RUN command
+- Clean up package caches in the same RUN command
+
+## Examples
+
+<example>
+# Good Dockerfile structure
+FROM python:3.13-slim
+WORKDIR /app
+COPY pyproject.toml uv.lock* ./
+RUN uv sync --frozen --no-dev
+COPY . .
+RUN uv pip install --system --no-cache-dir .
+CMD ["python", "manage.py", "runserver"]
+</example>
+
+<example type="invalid">
+# Bad - inconsistent paths and duplicated commands
+FROM python:3.13-slim
+WORKDIR /deps/api
+# CMD in both Dockerfile AND railway.json
+</example>

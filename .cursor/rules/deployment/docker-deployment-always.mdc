@@ -1,0 +1,39 @@
+---
+description: Critical Docker deployment safety practices for preventing environment mismatches and circular import issues
+globs: 
+alwaysApply: true
+---
+
+# Docker Deployment Safety Rules
+
+## Base Image Selection
+- ALWAYS use simple, clean base images (python:X.Y-slim) instead of complex pre-built containers
+- NEVER use vendor-specific containers (langchain/langgraph-api) unless absolutely necessary
+- ALWAYS match the Python version between local development and deployment environments
+
+## Environment Parity
+- ALWAYS ensure local Python version matches deployment Python version exactly
+- ALWAYS test deployment locally with Docker before pushing to production
+- NEVER assume vendor containers work the same as local environments
+- ALWAYS verify that `docker build` and `docker run` work locally before deploying
+
+## Dependency Management
+- ALWAYS install dependencies AND the current project as a package in containers
+- Pattern: `RUN uv sync --frozen --no-dev` THEN `RUN uv pip install --system --no-cache-dir .`
+- NEVER skip installing the current project as a package (`pip install .` or equivalent)
+
+## Examples
+
+<example>
+# Good Dockerfile pattern
+FROM python:3.13-slim
+RUN uv sync --frozen --no-dev
+COPY . .
+RUN uv pip install --system --no-cache-dir .
+</example>
+
+<example type="invalid">
+# Bad - using complex vendor container
+FROM langchain/langgraph-api:3.11
+# This often leads to circular imports and version conflicts
+</example>

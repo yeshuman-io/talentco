@@ -1,3 +1,5 @@
+# TalentCo API Docker Configuration
+# This follows our deployment safety rules for environment parity
 FROM python:3.13-slim
 
 # Set environment variables
