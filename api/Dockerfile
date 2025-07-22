@@ -19,10 +19,26 @@ RUN apt-get update && \
     node --version && \
     npm --version && \
     npx --version && \
-    rm -f /usr/lib/python3.11/EXTERNALLY-MANAGED /usr/lib/python3/dist-packages/EXTERNALLY-MANAGED || true
+    rm -f /usr/lib/python3.11/EXTERNALLY-MANAGED /usr/lib/python3/dist-packages/EXTERNALLY-MANAGED
 
-# Copy project files to expected location
-COPY . /deps/api
+# Force reinstall LangGraph packages to match working local versions
+RUN uv pip install --system --force-reinstall \
+    langgraph==0.5.3 \
+    langgraph-sdk \
+    langchain \
+    langchain-core \
+    langchain-openai
+
+# Copy dependency files
+COPY pyproject.toml uv.lock ./
+
+# Install dependencies
+RUN uv sync --frozen --no-dev
+
+# Copy application code
+COPY . .
+
+# Set working directory
 WORKDIR /deps/api
 
 # Install dependencies into system Python using uv pip (needed for LangGraph compatibility)
