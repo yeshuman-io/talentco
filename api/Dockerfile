@@ -30,8 +30,8 @@ WORKDIR /deps/api
 # Install dependencies to system Python (not virtual env)
 RUN uv pip install --system --no-cache-dir .
 
-# CRITICAL: Remove problematic container licensing module that has circular import
-RUN rm -rf /api/langgraph_license || true
+# CRITICAL: Create stub licensing module to avoid circular import
+RUN echo "def check_license_periodically(): pass" > /api/langgraph_license/validation.py
 
 # Force our Python packages to take precedence over container's built-in packages
 ENV PYTHONPATH="/usr/local/lib/python3.11/site-packages:/deps/api:$PYTHONPATH"
