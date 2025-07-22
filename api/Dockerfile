@@ -21,7 +21,13 @@ RUN apt-get update && \
     npx --version && \
     rm -f /usr/lib/python3.11/EXTERNALLY-MANAGED /usr/lib/python3/dist-packages/EXTERNALLY-MANAGED
 
-# Force reinstall LangGraph packages to match working local versions
+# Copy application code to expected location
+COPY . /deps/api
+
+# Set working directory
+WORKDIR /deps/api
+
+# Force reinstall LangGraph packages to match working local versions (before app dependencies)
 RUN uv pip install --system --force-reinstall \
     langgraph==0.5.3 \
     langgraph-sdk \
@@ -29,20 +35,8 @@ RUN uv pip install --system --force-reinstall \
     langchain-core \
     langchain-openai
 
-# Copy dependency files
-COPY pyproject.toml uv.lock ./
-
-# Install dependencies
+# Install app dependencies  
 RUN uv sync --frozen --no-dev
-
-# Copy application code
-COPY . .
-
-# Set working directory
-WORKDIR /deps/api
-
-# Install dependencies into system Python using uv pip (needed for LangGraph compatibility)
-RUN uv pip install --system --no-cache-dir .
 
 # Set the graph configuration for talentco agent
 ENV LANGSERVE_GRAPHS='{"agent": "/deps/api/graphs/agent.py:graph"}'
