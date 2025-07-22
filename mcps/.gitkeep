@@ -1,0 +1,8 @@
+# This directory will contain external MCP servers of interest
+# to the TalentCo agent project.
+#
+# Structure:
+# mcps/
+#   server_name/
+#     config.json
+#     README.md 

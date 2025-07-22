@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ['...', 'postgresql']
+
+[phases.install]
+cmds = ['uv sync']
+
+[phases.build]
+cmds = ['python manage.py collectstatic --noinput']
+
+[start]
+cmd = 'python manage.py migrate && daphne talentco.asgi:application --port $PORT --bind 0.0.0.0' 
