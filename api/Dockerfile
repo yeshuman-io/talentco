@@ -27,15 +27,10 @@ COPY . /deps/api
 # Set working directory
 WORKDIR /deps/api
 
-# Force reinstall LangGraph packages to match working local versions (before app dependencies)
-RUN uv pip install --system --force-reinstall \
-    langgraph==0.5.3 \
-    langgraph-sdk \
-    langchain \
-    langchain-core \
-    langchain-openai
+# Remove any pre-installed LangGraph packages that might conflict with our lockfile
+RUN pip uninstall -y langgraph langgraph-sdk langchain langchain-core langchain-openai langchain-community || true
 
-# Install app dependencies  
+# Install exact dependencies from lockfile (this should install LangGraph 0.5.3)
 RUN uv sync --frozen --no-dev
 
 # Set the graph configuration for talentco agent
