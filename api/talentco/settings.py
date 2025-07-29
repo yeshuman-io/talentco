@@ -41,9 +41,13 @@ INSTALLED_APPS = [
     # Third party apps
     'mem0client',
     # Project apps
-    'apps.core',
-    'apps.memories',
     'apps.api',
+    'apps.skills',
+    'apps.experiences',
+    'apps.memories',
+    'apps.organisations',
+    'apps.opportunities',
+    'apps.profiles',
 ]
 
 MIDDLEWARE = [
