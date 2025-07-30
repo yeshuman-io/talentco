@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'apps.api',
     'apps.skills',
     'apps.evaluations',
+    'apps.embeddings',
     'apps.memories',
     'apps.organisations',
     'apps.opportunities',
@@ -187,6 +188,9 @@ LOGGING = {
         },
     },
 }
+
+# OpenAI Configuration
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 
 # MEM0 Configuration
 MEM0_CONFIG = {
