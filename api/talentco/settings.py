@@ -43,7 +43,7 @@ INSTALLED_APPS = [
     # Project apps
     'apps.api',
     'apps.skills',
-    'apps.experiences',
+    'apps.evaluations',
     'apps.memories',
     'apps.organisations',
     'apps.opportunities',
