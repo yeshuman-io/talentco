@@ -91,11 +91,16 @@ class ProfileSkill(models.Model):
     
     def get_embedding_text(self):
         """Generate rich text for embedding with evidence level and recent context"""
-        # Find most recent experience using this skill
-        latest_experience = self.profile_experience_skills.order_by('-profile_experience__end_date').first()
+        # Find most recent experience using this skill (through ProfileExperienceSkill)
+        from django.apps import apps
+        ProfileExperienceSkill = apps.get_model('profiles', 'ProfileExperienceSkill')
+        latest_experience_skill = ProfileExperienceSkill.objects.filter(
+            skill=self.skill,
+            profile_experience__profile=self.profile
+        ).select_related('profile_experience', 'profile_experience__organisation').order_by('-profile_experience__end_date').first()
         
-        if latest_experience:
-            exp = latest_experience.profile_experience
+        if latest_experience_skill:
+            exp = latest_experience_skill.profile_experience
             recency = "currently using" if not exp.end_date else f"used until {exp.end_date.year}"
             context = f" - {recency} at {exp.organisation.name} as {exp.title}"
             return f"{self.skill.name} ({self.evidence_level}){context}"
@@ -157,3 +162,24 @@ class ProfileExperienceSkill(models.Model):
         """Generate embedding if it doesn't exist"""
         if not self.embedding:
             self.generate_embedding()
+    
+    def get_temporal_weight(self) -> float:
+        """
+        Calculate temporal weight for this skill-in-experience based on recency.
+        Recent experience is weighted higher than older experience.
+        """
+        from apps.evaluations.temporal_weighting import calculate_combined_temporal_weight
+        
+        return calculate_combined_temporal_weight(
+            self.profile_experience.start_date,
+            self.profile_experience.end_date
+        )
+    
+    def get_temporal_context(self) -> str:
+        """Get human-readable temporal context for debugging"""
+        from apps.evaluations.temporal_weighting import get_temporal_context_description
+        
+        return get_temporal_context_description(
+            self.profile_experience.start_date,
+            self.profile_experience.end_date
+        )

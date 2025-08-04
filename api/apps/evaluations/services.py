@@ -3,7 +3,7 @@ Evaluation services for TalentCo matching algorithms.
 Handles both employer->candidate and candidate->opportunity evaluations.
 """
 
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 from django.utils import timezone
 from django.db import transaction
 
@@ -12,32 +12,40 @@ from apps.profiles.models import Profile, ProfileSkill, ProfileExperience
 from apps.opportunities.models import Opportunity, OpportunitySkill, OpportunityExperience
 from apps.skills.models import Skill
 
+# PostgreSQL vector similarity imports
+from pgvector.django import CosineDistance
+from django.db.models import Max, Case, When, F, Value, FloatField
+
 
 class EvaluationService:
     """
     Service for creating and managing evaluation sets.
     Implements multi-stage pipeline: structured -> semantic -> LLM judge
+    
+    Pipeline:
+    1. Structured matching (skills overlap, requirements)
+    2. Semantic matching (PostgreSQL vector similarity) 
+    3. LLM judge (only for matches above similarity threshold)
     """
     
     def __init__(self):
-        self.llm_threshold_percent = 0.2  # Top 20% get LLM evaluation
+        pass  # Service is stateless
     
     def create_candidate_evaluation_set(
         self, 
         opportunity_id: str,
-        llm_threshold_percent: Optional[float] = None
+        llm_similarity_threshold: float = 0.7
     ) -> EvaluationSet:
         """
         Employer perspective: Find best candidates for an opportunity.
         
         Pipeline:
-        1. Get all profiles (50 synthetic)
+        1. Get all profiles 
         2. Structured matching (skills overlap, basic criteria)  
-        3. Semantic matching (vector similarity)
+        3. Semantic matching (PostgreSQL vector similarity)
         4. Rank by combined score
-        5. LLM judge top 20% (10 candidates)
+        5. LLM judge only matches above similarity threshold
         """
-        threshold = llm_threshold_percent or self.llm_threshold_percent
         
         with transaction.atomic():
             # Get opportunity and all profiles
@@ -49,7 +57,7 @@ class EvaluationService:
                 evaluator_perspective='employer',
                 opportunity=opportunity,
                 total_evaluated=all_profiles.count(),
-                llm_threshold_percent=threshold
+                llm_threshold_percent=llm_similarity_threshold  # Note: DB field name is historic, stores similarity threshold (not percentage)
             )
             
             # Run evaluation pipeline
@@ -59,7 +67,7 @@ class EvaluationService:
             
             # Create evaluation records
             self._create_evaluation_records(
-                eval_set, scored_profiles, threshold, 'employer'
+                eval_set, scored_profiles, llm_similarity_threshold, 'employer'
             )
             
             # Mark complete
@@ -72,13 +80,18 @@ class EvaluationService:
     def create_opportunity_evaluation_set(
         self, 
         profile_id: str,
-        llm_threshold_percent: Optional[float] = None
+        llm_similarity_threshold: float = 0.7
     ) -> EvaluationSet:
         """
         Candidate perspective: Find best opportunities for a profile.
-        Same pipeline, reversed perspective.
+        
+        Pipeline:
+        1. Get all opportunities
+        2. Structured matching (skills overlap, basic criteria)  
+        3. Semantic matching (PostgreSQL vector similarity)
+        4. Rank by combined score
+        5. LLM judge only matches above similarity threshold
         """
-        threshold = llm_threshold_percent or self.llm_threshold_percent
         
         with transaction.atomic():
             # Get profile and all opportunities  
@@ -90,7 +103,7 @@ class EvaluationService:
                 evaluator_perspective='candidate',
                 profile=profile,
                 total_evaluated=all_opportunities.count(),
-                llm_threshold_percent=threshold
+                llm_threshold_percent=llm_similarity_threshold  # Note: DB field name is historic, stores similarity threshold (not percentage)
             )
             
             # Run evaluation pipeline
@@ -100,7 +113,7 @@ class EvaluationService:
             
             # Create evaluation records (swap profile/opportunity order)
             self._create_evaluation_records(
-                eval_set, scored_opportunities, threshold, 'candidate'
+                eval_set, scored_opportunities, llm_similarity_threshold, 'candidate'
             )
             
             # Mark complete
@@ -133,9 +146,9 @@ class EvaluationService:
             scored_profiles.append({
                 'profile': profile,
                 'opportunity': opportunity,
-                'structured_score': structured_score,
-                'semantic_score': semantic_score,
-                'combined_score': combined_score
+                'structured_score': float(structured_score),  # Convert to Python float
+                'semantic_score': float(semantic_score),      # Convert to Python float
+                'combined_score': float(combined_score)       # Convert to Python float
             })
         
         # Sort by combined score (highest first)
@@ -167,9 +180,9 @@ class EvaluationService:
             scored_opportunities.append({
                 'profile': profile,
                 'opportunity': opportunity,
-                'structured_score': structured_score,
-                'semantic_score': semantic_score,
-                'combined_score': combined_score
+                'structured_score': float(structured_score),  # Convert to Python float
+                'semantic_score': float(semantic_score),      # Convert to Python float
+                'combined_score': float(combined_score)       # Convert to Python float
             })
         
         # Sort by combined score (highest first)
@@ -181,17 +194,19 @@ class EvaluationService:
         self,
         eval_set: EvaluationSet,
         scored_items: List[Dict],
-        llm_threshold_percent: float,
+        similarity_threshold: float,
         perspective: str
     ) -> None:
         """
         Create Evaluation records from scored results.
-        Apply LLM judge to top performers only.
+        Apply LLM judge only to matches above similarity threshold.
         """
-        total_count = len(scored_items)
-        llm_cut_count = max(1, int(total_count * llm_threshold_percent))
+        llm_judged_count = 0
         
         for rank, item in enumerate(scored_items, 1):
+            # Check if combined score exceeds similarity threshold
+            should_llm_judge = item['combined_score'] >= similarity_threshold
+            
             # Create base evaluation
             evaluation = Evaluation.objects.create(
                 evaluation_set=eval_set,
@@ -203,11 +218,11 @@ class EvaluationService:
                     'structured': item['structured_score'],
                     'semantic': item['semantic_score']
                 },
-                was_llm_judged=rank <= llm_cut_count
+                was_llm_judged=should_llm_judge
             )
             
-            # Apply LLM judge to top performers
-            if rank <= llm_cut_count:
+            # Apply LLM judge only if similarity is high enough
+            if should_llm_judge:
                 llm_score, reasoning = self._llm_judge_evaluation(
                     item['profile'], item['opportunity'], perspective
                 )
@@ -218,8 +233,10 @@ class EvaluationService:
                 evaluation.component_scores['llm_judge'] = llm_score
                 evaluation.save()
         
-        # Update evaluation set with LLM count
-        eval_set.llm_judged_count = llm_cut_count
+                llm_judged_count += 1
+        
+        # Update evaluation set with actual LLM count
+        eval_set.llm_judged_count = llm_judged_count
         eval_set.save()
     
     def _calculate_structured_match(self, profile: Profile, opportunity: Opportunity) -> float:
@@ -268,18 +285,160 @@ class EvaluationService:
     
     def _calculate_semantic_similarity(self, profile: Profile, opportunity: Opportunity) -> float:
         """
-        Calculate semantic similarity using vector embeddings.
-        TODO: Implement once embeddings are added to models.
-        """
-        # Placeholder implementation
-        # In reality, this would:
-        # 1. Get profile embedding (skills + experience summary)
-        # 2. Get opportunity embedding (description + requirements)
-        # 3. Calculate cosine similarity between vectors
-        # 4. Return normalized similarity score
+        Calculate multi-dimensional semantic similarity using PostgreSQL vector operations.
         
-        import random
-        return random.uniform(0.3, 0.9)  # Fake similarity for now
+        Implements sophisticated matching strategy:
+        1. Skills-to-skills matching (ProfileSkill ↔ OpportunitySkill)
+        2. Experience-to-experience matching (ProfileExperience ↔ OpportunityExperience)  
+        3. Skills-in-context matching (ProfileExperienceSkill ↔ OpportunitySkill) with temporal weighting
+        4. Weighted combination of all dimensions
+        
+        Returns:
+            Similarity score between 0.0 and 1.0
+        """
+        similarity_scores = {}
+        
+        # 1. Skills-to-Skills Matching (40% weight)
+        skills_similarity = self._calculate_skills_similarity(profile, opportunity)
+        similarity_scores['skills'] = skills_similarity
+        
+        # 2. Experience-to-Experience Matching (30% weight)  
+        experience_similarity = self._calculate_experience_similarity(profile, opportunity)
+        similarity_scores['experience'] = experience_similarity
+        
+        # 3. Skills-in-Context Matching with Temporal Weighting (30% weight)
+        contextual_similarity = self._calculate_contextual_skills_similarity(profile, opportunity)
+        similarity_scores['contextual'] = contextual_similarity
+        
+        # Weighted combination
+        final_similarity = (
+            (skills_similarity * 0.4) +
+            (experience_similarity * 0.3) + 
+            (contextual_similarity * 0.3)
+        )
+        
+        return min(1.0, max(0.0, final_similarity))  # Clamp to [0, 1]
+    
+    def _ensure_list(self, embedding) -> List[float]:
+        """Convert numpy array to list for pgvector compatibility"""
+        if hasattr(embedding, 'tolist'):
+            return embedding.tolist()
+        elif isinstance(embedding, (list, tuple)):
+            return list(embedding)
+        else:
+            return list(embedding)
+    
+    def _calculate_skills_similarity(self, profile: Profile, opportunity: Opportunity) -> float:
+        """Calculate semantic similarity between ProfileSkills and OpportunitySkills using PostgreSQL"""
+        
+        profile_skills = profile.profile_skills.exclude(embedding__isnull=True)
+        opportunity_skills = opportunity.opportunity_skills.exclude(embedding__isnull=True)
+        
+        if not profile_skills.exists() or not opportunity_skills.exists():
+            return 0.0
+        
+        # For each opportunity skill, find the most similar profile skill using pgvector
+        similarities = []
+        
+        for opp_skill in opportunity_skills:
+            # Convert numpy array to list for pgvector compatibility
+            opp_embedding = self._ensure_list(opp_skill.embedding)
+            
+            # Find the most similar profile skill using Django ORM + pgvector
+            best_match = profile_skills.annotate(
+                similarity=1 - CosineDistance('embedding', opp_embedding)
+            ).aggregate(
+                max_similarity=Max('similarity')
+            )['max_similarity']
+            
+            similarities.append(best_match or 0.0)
+        
+        # Return average of best matches for each opportunity skill
+        return sum(similarities) / len(similarities) if similarities else 0.0
+    
+    def _calculate_experience_similarity(self, profile: Profile, opportunity: Opportunity) -> float:
+        """Calculate semantic similarity between ProfileExperiences and OpportunityExperiences using PostgreSQL"""
+        
+        profile_experiences = profile.profile_experiences.exclude(embedding__isnull=True)
+        opportunity_experiences = opportunity.opportunity_experiences.exclude(embedding__isnull=True)
+        
+        if not profile_experiences.exists() or not opportunity_experiences.exists():
+            return 0.0
+        
+        # For each opportunity experience, find the most similar profile experience using pgvector
+        similarities = []
+        
+        for opp_exp in opportunity_experiences:
+            # Convert numpy array to list for pgvector compatibility
+            opp_embedding = self._ensure_list(opp_exp.embedding)
+            
+            # Find the most similar profile experience using Django ORM + pgvector
+            best_match = profile_experiences.annotate(
+                similarity=1 - CosineDistance('embedding', opp_embedding)
+            ).aggregate(
+                max_similarity=Max('similarity')
+            )['max_similarity']
+            
+            similarities.append(best_match or 0.0)
+        
+        # Return average of best matches for each opportunity experience
+        return sum(similarities) / len(similarities) if similarities else 0.0
+    
+    def _calculate_contextual_skills_similarity(self, profile: Profile, opportunity: Opportunity) -> float:
+        """
+        Calculate semantic similarity between ProfileExperienceSkills and OpportunitySkills
+        with temporal weighting using PostgreSQL. This is the key innovation - skills demonstrated 
+        in context with recency bias.
+        """
+        from apps.profiles.models import ProfileExperienceSkill
+        
+        opportunity_skills = opportunity.opportunity_skills.exclude(embedding__isnull=True)
+        
+        if not opportunity_skills.exists():
+            return 0.0
+        
+        # Get all ProfileExperienceSkills for this profile with embeddings
+        profile_exp_skills = ProfileExperienceSkill.objects.filter(
+            profile_experience__profile=profile,
+            embedding__isnull=False
+        ).select_related('profile_experience')
+        
+        if not profile_exp_skills.exists():
+            return 0.0
+        
+        # For each opportunity skill, find best matching experience skill with temporal weighting
+        weighted_similarities = []
+        
+        for opp_skill in opportunity_skills:
+            # Convert numpy array to list for pgvector compatibility
+            opp_embedding = self._ensure_list(opp_skill.embedding)
+            
+            # Annotate experience skills with similarity and temporal weight using Django ORM
+            annotated_exp_skills = profile_exp_skills.annotate(
+                # Calculate cosine similarity using pgvector
+                base_similarity=1 - CosineDistance('embedding', opp_embedding),
+                
+                # Simple temporal weight: current roles get 1.0, past roles get 0.7
+                # This avoids complex date arithmetic that causes ORM issues
+                temporal_weight=Case(
+                    When(profile_experience__end_date__isnull=True, then=Value(1.0)),  # Current role
+                    default=Value(0.7),  # Past role
+                    output_field=FloatField()
+                ),
+                
+                # Final weighted similarity
+                weighted_similarity=F('base_similarity') * F('temporal_weight')
+            )
+            
+            # Get the best weighted match for this opportunity skill
+            best_weighted_match = annotated_exp_skills.aggregate(
+                max_weighted=Max('weighted_similarity')
+            )['max_weighted']
+            
+            weighted_similarities.append(best_weighted_match or 0.0)
+        
+        # Return average weighted similarity across all opportunity skills
+        return sum(weighted_similarities) / len(weighted_similarities) if weighted_similarities else 0.0
     
     def _llm_judge_evaluation(
         self, 
@@ -288,39 +447,142 @@ class EvaluationService:
         perspective: str
     ) -> Tuple[float, str]:
         """
-        Use LLM to evaluate profile-opportunity match.
+        Use LLM to evaluate profile-opportunity match with detailed reasoning.
         Returns (score, reasoning).
-        TODO: Implement LLM integration.
         """
-        # Placeholder implementation
-        # In reality, this would:
-        # 1. Format profile and opportunity data for LLM
-        # 2. Send to LLM with evaluation prompt
-        # 3. Parse response for score and reasoning
-        # 4. Return structured results
+        import openai
+        from django.conf import settings
+        import json
         
-        import random
-        score = random.uniform(0.6, 0.95)  # Top candidates get higher scores
+        client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+        
+        # Format detailed profile data
+        profile_skills = [ps.skill.name for ps in profile.profile_skills.all()]
+        
+        # Get detailed experience information
+        experiences = []
+        for exp in profile.profile_experiences.all().order_by('-end_date'):
+            exp_text = f"• {exp.title} at {exp.organisation.name} ({exp.start_date.year}-{'Present' if not exp.end_date else exp.end_date.year})"
+            if exp.description:
+                exp_text += f": {exp.description[:200]}..."
+            experiences.append(exp_text)
+        
+        # Format opportunity data with more detail
+        required_skills = [os.skill.name for os in opportunity.opportunity_skills.filter(requirement_type='required')]
+        preferred_skills = [os.skill.name for os in opportunity.opportunity_skills.filter(requirement_type='preferred')]
+        
+        # Get opportunity experience requirements
+        opp_experiences = []
+        for opp_exp in opportunity.opportunity_experiences.all():
+            opp_experiences.append(f"• {opp_exp.description}")
         
         if perspective == 'employer':
-            reasoning = f"Strong technical match for {opportunity.title}. Profile shows relevant experience and skills alignment."
+            prompt = f"""You are an expert ESG talent consultant evaluating whether a candidate is a good fit for a sustainability role.
+
+🎯 OPPORTUNITY: {opportunity.title} at {opportunity.organisation.name}
+Description: {opportunity.description}
+
+Required Skills: {', '.join(required_skills) if required_skills else 'None specified'}
+Preferred Skills: {', '.join(preferred_skills) if preferred_skills else 'None specified'}
+
+Experience Requirements:
+{chr(10).join(opp_experiences) if opp_experiences else 'None specified'}
+
+👤 CANDIDATE: {profile.first_name} {profile.last_name}
+Skills Portfolio: {', '.join(profile_skills) if profile_skills else 'None listed'}
+
+Career History:
+{chr(10).join(experiences) if experiences else 'No experience listed'}
+
+Provide a comprehensive evaluation analyzing:
+1. Skills Match: How well do their skills align with requirements?
+2. Experience Relevance: How relevant is their career background?
+3. Growth Potential: What's their potential for this role?
+4. ESG Sector Fit: How well do they fit the ESG/sustainability domain?
+5. Overall Assessment: Strengths, gaps, and recommendation
+
+Score from 0.0 to 1.0 where:
+• 0.9-1.0: Exceptional match, immediate hire
+• 0.7-0.9: Strong match, proceed to interview
+• 0.5-0.7: Good potential, needs further evaluation
+• 0.3-0.5: Some alignment, significant gaps
+• 0.0-0.3: Poor match, not suitable
+
+Respond in JSON format: {{"score": 0.85, "reasoning": "detailed analysis here"}}"""
         else:
-            reasoning = f"Good opportunity fit for candidate. Role aligns with career goals and skill set."
+            prompt = f"""You are an expert career consultant evaluating whether a sustainability role is a good fit for a candidate.
+
+👤 CANDIDATE: {profile.first_name} {profile.last_name}
+Skills Portfolio: {', '.join(profile_skills) if profile_skills else 'None listed'}
+
+Career History:
+{chr(10).join(experiences) if experiences else 'No experience listed'}
+
+🎯 OPPORTUNITY: {opportunity.title} at {opportunity.organisation.name}
+Description: {opportunity.description}
+
+Required Skills: {', '.join(required_skills) if required_skills else 'None specified'}
+Preferred Skills: {', '.join(preferred_skills) if preferred_skills else 'None specified'}
+
+Experience Requirements:
+{chr(10).join(opp_experiences) if opp_experiences else 'None specified'}
+
+Provide a comprehensive career fit analysis covering:
+1. Skill Development: How does this role advance their skills?
+2. Career Progression: Is this a logical next step?
+3. Learning Opportunities: What new capabilities will they gain?
+4. Industry Alignment: How well does this fit their ESG interests?
+5. Overall Recommendation: Why this is/isn't a good move
+
+Score from 0.0 to 1.0 where:
+• 0.9-1.0: Perfect career move, highly recommended
+• 0.7-0.9: Excellent opportunity, should pursue
+• 0.5-0.7: Good fit, worth considering
+• 0.3-0.5: Mixed fit, some benefits but gaps
+• 0.0-0.3: Poor fit, not recommended
+
+Respond in JSON format: {{"score": 0.85, "reasoning": "detailed analysis here"}}"""
         
-        return score, reasoning
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You are an expert ESG talent consultant with deep knowledge of sustainability careers, environmental frameworks (TCFD, GRI, SASB), and ESG investment strategies. Provide detailed, actionable insights."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=800
+            )
+            
+            result_text = response.choices[0].message.content.strip()
+            result = json.loads(result_text)
+            
+            score = float(result.get('score', 0.0))
+            reasoning = result.get('reasoning', 'LLM evaluation completed')
+            
+            # Clamp score to valid range
+            score = max(0.0, min(1.0, score))
+            
+            return score, reasoning
+            
+        except Exception as e:
+            # Fallback on API failure - return conservative score
+            fallback_score = 0.7
+            fallback_reasoning = f"LLM evaluation failed ({str(e)}), using conservative score"
+            return fallback_score, fallback_reasoning
 
 
 # Convenience functions for common use cases
-def find_candidates_for_opportunity(opportunity_id: str, llm_threshold: float = 0.2) -> EvaluationSet:
+def find_candidates_for_opportunity(opportunity_id: str, llm_similarity_threshold: float = 0.7) -> EvaluationSet:
     """Employer: Find best candidates for a job opportunity."""
     service = EvaluationService()
-    return service.create_candidate_evaluation_set(opportunity_id, llm_threshold)
+    return service.create_candidate_evaluation_set(opportunity_id, llm_similarity_threshold)
 
 
-def find_opportunities_for_candidate(profile_id: str, llm_threshold: float = 0.2) -> EvaluationSet:
+def find_opportunities_for_candidate(profile_id: str, llm_similarity_threshold: float = 0.7) -> EvaluationSet:
     """Candidate: Find best job opportunities for a profile."""
     service = EvaluationService()
-    return service.create_opportunity_evaluation_set(profile_id, llm_threshold)
+    return service.create_opportunity_evaluation_set(profile_id, llm_similarity_threshold)
 
 
 def get_top_matches(evaluation_set: EvaluationSet, limit: int = 10) -> List[Evaluation]:
