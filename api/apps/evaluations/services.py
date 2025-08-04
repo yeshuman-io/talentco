@@ -4,13 +4,13 @@ Handles both employer->candidate and candidate->opportunity evaluations.
 """
 
 from typing import List, Dict, Tuple
+from asgiref.sync import sync_to_async
 from django.utils import timezone
 from django.db import transaction
 
 from .models import EvaluationSet, Evaluation
-from apps.profiles.models import Profile, ProfileSkill, ProfileExperience
-from apps.opportunities.models import Opportunity, OpportunitySkill, OpportunityExperience
-from apps.skills.models import Skill
+from apps.profiles.models import Profile, ProfileSkill
+from apps.opportunities.models import Opportunity, OpportunitySkill
 
 # PostgreSQL vector similarity imports
 from pgvector.django import CosineDistance
@@ -244,7 +244,7 @@ class EvaluationService:
         Calculate structured matching score based on skills overlap.
         Returns score between 0.0 and 1.0.
         """
-        # Get profile skills
+        # Get profile skills (using sync ORM - this method should be called with sync_to_async)
         profile_skills = set(
             ProfileSkill.objects.filter(profile=profile)
             .values_list('skill__name', flat=True)
@@ -329,7 +329,11 @@ class EvaluationService:
             return list(embedding)
     
     def _calculate_skills_similarity(self, profile: Profile, opportunity: Opportunity) -> float:
-        """Calculate semantic similarity between ProfileSkills and OpportunitySkills using PostgreSQL"""
+        """
+        Calculate semantic similarity between ProfileSkills and OpportunitySkills using PostgreSQL.
+        
+        NOTE: This is a SYNC method with Django ORM calls - use sync_to_async when calling from async context.
+        """
         
         profile_skills = profile.profile_skills.exclude(embedding__isnull=True)
         opportunity_skills = opportunity.opportunity_skills.exclude(embedding__isnull=True)
@@ -357,7 +361,11 @@ class EvaluationService:
         return sum(similarities) / len(similarities) if similarities else 0.0
     
     def _calculate_experience_similarity(self, profile: Profile, opportunity: Opportunity) -> float:
-        """Calculate semantic similarity between ProfileExperiences and OpportunityExperiences using PostgreSQL"""
+        """
+        Calculate semantic similarity between ProfileExperiences and OpportunityExperiences using PostgreSQL.
+        
+        NOTE: This is a SYNC method with Django ORM calls - use sync_to_async when calling from async context.
+        """
         
         profile_experiences = profile.profile_experiences.exclude(embedding__isnull=True)
         opportunity_experiences = opportunity.opportunity_experiences.exclude(embedding__isnull=True)
@@ -389,6 +397,8 @@ class EvaluationService:
         Calculate semantic similarity between ProfileExperienceSkills and OpportunitySkills
         with temporal weighting using PostgreSQL. This is the key innovation - skills demonstrated 
         in context with recency bias.
+        
+        NOTE: This is a SYNC method with Django ORM calls - use sync_to_async when calling from async context.
         """
         from apps.profiles.models import ProfileExperienceSkill
         
@@ -449,6 +459,8 @@ class EvaluationService:
         """
         Use LLM to evaluate profile-opportunity match with detailed reasoning.
         Returns (score, reasoning).
+        
+        NOTE: This is a SYNC method with Django ORM calls - use sync_to_async when calling from async context.
         """
         import openai
         from django.conf import settings
@@ -456,7 +468,7 @@ class EvaluationService:
         
         client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
         
-        # Format detailed profile data
+        # Format detailed profile data (using sync ORM - this method should be called with sync_to_async)
         profile_skills = [ps.skill.name for ps in profile.profile_skills.all()]
         
         # Get detailed experience information
@@ -562,7 +574,7 @@ Respond in JSON format: {{"score": 0.85, "reasoning": "detailed analysis here"}}
             
             # Clamp score to valid range
             score = max(0.0, min(1.0, score))
-            
+        
             return score, reasoning
             
         except Exception as e:
@@ -570,6 +582,412 @@ Respond in JSON format: {{"score": 0.85, "reasoning": "detailed analysis here"}}
             fallback_score = 0.7
             fallback_reasoning = f"LLM evaluation failed ({str(e)}), using conservative score"
             return fallback_score, fallback_reasoning
+    
+    # ================================================================
+    # ASYNC AGENT METHODS - For LangGraph agent tools
+    # ================================================================
+    
+    async def find_candidates_for_opportunity_async(
+        self, 
+        opportunity_id: str,
+        llm_similarity_threshold: float = 0.7,
+        limit: int = None
+    ) -> Dict:
+        """
+        Async version for employer agent tools.
+        Returns structured data optimized for agent consumption.
+        """
+        # Use sync_to_async to wrap the sync method
+        sync_create = sync_to_async(self.create_candidate_evaluation_set)
+        eval_set = await sync_create(opportunity_id, llm_similarity_threshold)
+        
+        # Get top matches 
+        sync_get_evaluations = sync_to_async(
+            lambda: list(eval_set.evaluations.select_related(
+                'profile'
+            ).order_by('rank_in_set')[:limit] if limit else eval_set.evaluations.all())
+        )
+        evaluations = await sync_get_evaluations()
+        
+        return {
+            'evaluation_set_id': str(eval_set.id),
+            'opportunity_id': opportunity_id,
+            'total_candidates_evaluated': eval_set.total_evaluated,
+            'llm_judged_count': len([e for e in evaluations if e.was_llm_judged]),
+            'top_matches': [
+                {
+                    'rank': e.rank_in_set,
+                    'profile_id': str(e.profile.id),
+                    'candidate_name': f"{e.profile.first_name} {e.profile.last_name}",
+                    'final_score': float(e.final_score),
+                    'structured_score': float(e.component_scores.get('structured', 0)),
+                    'semantic_score': float(e.component_scores.get('semantic', 0)),
+                    'llm_score': float(e.component_scores.get('llm_judge')) if e.was_llm_judged else None,
+                    'llm_reasoning': e.llm_reasoning if e.was_llm_judged else None,
+                    'was_llm_judged': e.was_llm_judged
+                } for e in evaluations
+            ]
+        }
+    
+    async def evaluate_single_candidate_async(
+        self, 
+        profile_id: str, 
+        opportunity_id: str
+    ) -> Dict:
+        """
+        Detailed analysis of one candidate for an opportunity.
+        Used by employer agent for deep candidate evaluation.
+        """
+        # Get models using sync_to_async
+        get_profile = sync_to_async(Profile.objects.get)
+        get_opportunity = sync_to_async(Opportunity.objects.get)
+        
+        profile = await get_profile(id=profile_id)
+        opportunity = await get_opportunity(id=opportunity_id)
+        
+        # Calculate all matching components (wrap sync methods with sync_to_async)
+        calc_structured = sync_to_async(self._calculate_structured_match)
+        calc_semantic = sync_to_async(self._calculate_semantic_similarity)
+        calc_llm_judge = sync_to_async(self._llm_judge_evaluation)
+        
+        structured_score = await calc_structured(profile, opportunity)
+        semantic_score = await calc_semantic(profile, opportunity)
+        
+        # Get LLM judge evaluation
+        llm_score, llm_reasoning = await calc_llm_judge(profile, opportunity, 'employer')
+        
+        # Calculate combined score (60% structured, 40% semantic)
+        combined_score = (structured_score * 0.6) + (semantic_score * 0.4)
+        
+        return {
+            'profile_id': str(profile.id),
+            'opportunity_id': str(opportunity.id),
+            'candidate_name': f"{profile.first_name} {profile.last_name}",
+            'detailed_scores': {
+                'structured_match': float(structured_score),
+                'semantic_similarity': float(semantic_score), 
+                'combined_score': float(combined_score),
+                'llm_judge_score': float(llm_score),
+                'llm_reasoning': llm_reasoning
+            },
+            'skill_analysis': await self._analyze_skill_fit_async(profile, opportunity),
+            'experience_analysis': await self._analyze_experience_fit_async(profile, opportunity)
+        }
+    
+    async def find_opportunities_for_profile_async(
+        self,
+        profile_id: str,
+        llm_similarity_threshold: float = 0.7,
+        limit: int = None
+    ) -> Dict:
+        """
+        Async version for candidate agent tools.
+        Returns structured data optimized for agent consumption.
+        """
+        # Use sync_to_async to wrap the sync method
+        sync_create = sync_to_async(self.create_opportunity_evaluation_set)
+        eval_set = await sync_create(profile_id, llm_similarity_threshold)
+        
+        # Get top matches
+        sync_get_evaluations = sync_to_async(
+            lambda: list(eval_set.evaluations.select_related(
+                'opportunity', 'opportunity__organisation'
+            ).order_by('rank_in_set')[:limit] if limit else eval_set.evaluations.all())
+        )
+        evaluations = await sync_get_evaluations()
+        
+        return {
+            'evaluation_set_id': str(eval_set.id),
+            'profile_id': profile_id,
+            'total_opportunities_evaluated': eval_set.total_evaluated,
+            'llm_judged_count': len([e for e in evaluations if e.was_llm_judged]),
+            'top_matches': [
+                {
+                    'rank': e.rank_in_set,
+                    'opportunity_id': str(e.opportunity.id),
+                    'role_title': e.opportunity.title,
+                    'company_name': e.opportunity.organisation.name,
+                    'final_score': float(e.final_score),
+                    'structured_score': float(e.component_scores.get('structured', 0)),
+                    'semantic_score': float(e.component_scores.get('semantic', 0)),
+                    'llm_score': float(e.component_scores.get('llm_judge')) if e.was_llm_judged else None,
+                    'llm_reasoning': e.llm_reasoning if e.was_llm_judged else None,
+                    'was_llm_judged': e.was_llm_judged
+                } for e in evaluations
+            ]
+        }
+    
+    async def analyze_opportunity_fit_async(
+        self,
+        profile_id: str,
+        opportunity_id: str
+    ) -> Dict:
+        """
+        Detailed analysis of opportunity fit for a candidate.
+        Used by candidate agent for opportunity evaluation.
+        """
+        # Get models using sync_to_async
+        get_profile = sync_to_async(Profile.objects.get)
+        get_opportunity = sync_to_async(Opportunity.objects.get)
+        
+        profile = await get_profile(id=profile_id)
+        opportunity = await get_opportunity(id=opportunity_id)
+        
+        # Calculate all matching components (wrap sync methods with sync_to_async)
+        calc_structured = sync_to_async(self._calculate_structured_match)
+        calc_semantic = sync_to_async(self._calculate_semantic_similarity)
+        calc_llm_judge = sync_to_async(self._llm_judge_evaluation)
+        
+        structured_score = await calc_structured(profile, opportunity)
+        semantic_score = await calc_semantic(profile, opportunity)
+        
+        # Get LLM judge evaluation from candidate perspective
+        llm_score, llm_reasoning = await calc_llm_judge(profile, opportunity, 'candidate')
+        
+        # Calculate combined score
+        combined_score = (structured_score * 0.6) + (semantic_score * 0.4)
+        
+        return {
+            'profile_id': str(profile.id),
+            'opportunity_id': str(opportunity.id),
+            'role_title': opportunity.title,
+            'company_name': opportunity.organisation.name,
+            'fit_analysis': {
+                'structured_match': float(structured_score),
+                'semantic_similarity': float(semantic_score),
+                'combined_score': float(combined_score),
+                'llm_assessment_score': float(llm_score),
+                'llm_reasoning': llm_reasoning
+            },
+            'skill_gap_analysis': await self._analyze_skill_gaps_async(profile, opportunity),
+            'experience_relevance': await self._analyze_experience_relevance_async(profile, opportunity)
+        }
+    
+    async def analyze_talent_pool_async(self, skill_names: List[str] = None) -> Dict:
+        """
+        Market insights for employer agents.
+        Analyze available talent pool and skill availability.
+        """
+        # Get all profiles with experience data
+        get_profiles = sync_to_async(
+            lambda: list(Profile.objects.prefetch_related(
+                'profile_skills__skill', 'profile_experiences'
+            ).all())
+        )
+        profiles = await get_profiles()
+        
+        # Analyze skill distribution
+        skill_analysis = {}
+        experience_levels = {'junior': 0, 'mid': 0, 'senior': 0, 'executive': 0}
+        
+        for profile in profiles:
+            # Count experience level based on total years
+            # Use sync_to_async to safely access profile_experiences relationship
+            def get_profile_exps_func(p):
+                return list(p.profile_experiences.all())
+            
+            get_profile_exps = sync_to_async(get_profile_exps_func)
+            profile_exps = await get_profile_exps(profile)
+            
+            total_experience = sum([
+                ((exp.end_date or timezone.now().date()) - exp.start_date).days / 365.25
+                for exp in profile_exps
+            ])
+            
+            if total_experience < 3:
+                experience_levels['junior'] += 1
+            elif total_experience < 7:
+                experience_levels['mid'] += 1
+            elif total_experience < 15:
+                experience_levels['senior'] += 1
+            else:
+                experience_levels['executive'] += 1
+            
+            # Count skills using sync_to_async
+            def get_profile_skills_func(p):
+                return list(p.profile_skills.select_related('skill').all())
+            
+            get_profile_skills = sync_to_async(get_profile_skills_func)
+            profile_skill_list = await get_profile_skills(profile)
+            
+            for profile_skill in profile_skill_list:
+                skill_name = profile_skill.skill.name
+                if skill_names is None or skill_name in skill_names:
+                    if skill_name not in skill_analysis:
+                        skill_analysis[skill_name] = {'count': 0, 'evidence_levels': {}}
+                    skill_analysis[skill_name]['count'] += 1
+                    evidence = profile_skill.evidence_level
+                    skill_analysis[skill_name]['evidence_levels'][evidence] = \
+                        skill_analysis[skill_name]['evidence_levels'].get(evidence, 0) + 1
+        
+        return {
+            'total_candidates': len(profiles),
+            'experience_distribution': experience_levels,
+            'skill_availability': skill_analysis,
+            'market_insights': {
+                'most_common_skills': sorted(
+                    skill_analysis.items(), 
+                    key=lambda x: x[1]['count'], 
+                    reverse=True
+                )[:10],
+                'skill_scarcity': [
+                    skill for skill, data in skill_analysis.items() 
+                    if data['count'] < len(profiles) * 0.1  # Less than 10% have this skill
+                ]
+            }
+        }
+    
+    async def get_learning_recommendations_async(
+        self, 
+        profile_id: str, 
+        target_opportunities: List[str] = None
+    ) -> Dict:
+        """
+        Learning and skill development recommendations for candidates.
+        Analyzes skill gaps against target opportunities or market trends.
+        """
+        get_profile = sync_to_async(Profile.objects.get)
+        profile = await get_profile(id=profile_id)
+        
+        # Get current skills
+        current_skills = set()
+        def get_profile_skills_func(p):
+            return list(p.profile_skills.select_related('skill').all())
+        
+        get_profile_skills = sync_to_async(get_profile_skills_func)
+        profile_skills = await get_profile_skills(profile)
+        
+        for ps in profile_skills:
+            current_skills.add(ps.skill.name)
+        
+        # Analyze opportunities to find skill gaps
+        if target_opportunities:
+            def get_target_opps_func(target_ids):
+                return list(Opportunity.objects.filter(
+                    id__in=target_ids
+                ).select_related('organisation').prefetch_related('opportunity_skills__skill'))
+            
+            get_target_opps = sync_to_async(get_target_opps_func)
+            opportunities = await get_target_opps(target_opportunities)
+        else:
+            # Get all opportunities for general market analysis
+            def get_all_opps_func():
+                return list(Opportunity.objects.select_related('organisation').prefetch_related('opportunity_skills__skill').all())
+            
+            get_all_opps = sync_to_async(get_all_opps_func)
+            opportunities = await get_all_opps()
+        
+        # Find missing skills across target opportunities
+        missing_skills = {}
+        recommended_skills = set()
+        
+        for opp in opportunities:
+            opp_skills = set()
+            # Use sync_to_async to safely access opportunity_skills relationship
+            # Avoid lambda closure issues by creating a separate function
+            def get_opp_skills_func(opportunity):
+                return list(opportunity.opportunity_skills.select_related('skill').all())
+            
+            get_opp_skills = sync_to_async(get_opp_skills_func)
+            opp_skill_list = await get_opp_skills(opp)
+            
+            for opp_skill in opp_skill_list:
+                skill_name = opp_skill.skill.name
+                opp_skills.add(skill_name)
+                
+                if skill_name not in current_skills:
+                    if skill_name not in missing_skills:
+                        missing_skills[skill_name] = {'opportunity_count': 0, 'opportunities': []}
+                    missing_skills[skill_name]['opportunity_count'] += 1
+                    missing_skills[skill_name]['opportunities'].append({
+                        'id': str(opp.id),
+                        'title': opp.title,
+                        'company': opp.organisation.name
+                    })
+            
+            # Find skills that would improve match
+            skill_overlap = len(current_skills.intersection(opp_skills))
+            if skill_overlap > 0:  # Only recommend for relevant opportunities
+                recommended_skills.update(opp_skills - current_skills)
+        
+        # Prioritize recommendations
+        priority_skills = sorted(
+            missing_skills.items(),
+            key=lambda x: x[1]['opportunity_count'],
+            reverse=True
+        )[:10]
+        
+        return {
+            'profile_id': str(profile.id),
+            'current_skills_count': len(current_skills),
+            'skill_gap_analysis': {
+                'missing_skills_count': len(missing_skills),
+                'priority_recommendations': [
+                    {
+                        'skill_name': skill,
+                        'opportunity_count': data['opportunity_count'],
+                        'impact': 'high' if data['opportunity_count'] > len(opportunities) * 0.3 else 'medium',
+                        'example_opportunities': data['opportunities'][:3]
+                    } for skill, data in priority_skills
+                ]
+            },
+            'learning_path': {
+                'immediate_focus': [item[0] for item in priority_skills[:3]],
+                'medium_term': [item[0] for item in priority_skills[3:7]],
+                'advanced': [item[0] for item in priority_skills[7:]]
+            }
+        }
+    
+    # Helper methods for detailed analysis
+    async def _analyze_skill_fit_async(self, profile: Profile, opportunity: Opportunity) -> Dict:
+        """Analyze skill fit between profile and opportunity."""
+        # Use structured matching for skill overlap (more reliable than semantic when embeddings missing)
+        calc_structured_match = sync_to_async(self._calculate_structured_match)
+        structured_score = await calc_structured_match(profile, opportunity)
+        
+        return {
+            'skill_overlap_percentage': structured_score * 100,
+            'matching_skills': [],  # Would be populated with actual matching skills
+            'missing_skills': []    # Would be populated with required but missing skills
+        }
+    
+    async def _analyze_experience_fit_async(self, profile: Profile, opportunity: Opportunity) -> Dict:
+        """Analyze experience fit between profile and opportunity."""
+        # For now, use a simple calculation based on whether profile has experiences
+        # This could be enhanced with more sophisticated experience matching logic
+        from asgiref.sync import sync_to_async
+        
+        get_profile_exp_count = sync_to_async(
+            lambda: profile.profile_experiences.count()
+        )
+        get_opportunity_exp_count = sync_to_async(
+            lambda: opportunity.opportunity_experiences.count()
+        )
+        
+        profile_exp_count = await get_profile_exp_count()
+        opp_exp_count = await get_opportunity_exp_count()
+        
+        # Simple heuristic: if profile has experiences and opportunity needs them, give some score
+        if profile_exp_count > 0 and opp_exp_count > 0:
+            experience_relevance = 0.8  # 80% as a reasonable baseline
+        elif profile_exp_count > 0:
+            experience_relevance = 0.6  # 60% if profile has experience but no specific requirements
+        else:
+            experience_relevance = 0.3  # 30% base score
+        
+        return {
+            'experience_relevance': experience_relevance * 100,
+            'relevant_experiences': [],  # Would be populated with matching experiences
+            'experience_gaps': []        # Would be populated with missing experience types
+        }
+    
+    async def _analyze_skill_gaps_async(self, profile: Profile, opportunity: Opportunity) -> Dict:
+        """Analyze skill gaps for candidate perspective."""
+        return await self._analyze_skill_fit_async(profile, opportunity)
+    
+    async def _analyze_experience_relevance_async(self, profile: Profile, opportunity: Opportunity) -> Dict:
+        """Analyze experience relevance for candidate perspective."""
+        return await self._analyze_experience_fit_async(profile, opportunity)
 
 
 # Convenience functions for common use cases
