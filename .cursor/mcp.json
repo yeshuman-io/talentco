@@ -1,0 +1,14 @@
+{
+  "runtimes": [
+    {
+      "name": "talentco-mcp",
+      "command": "api/.venv/bin/python",
+      "args": ["api/mcps/talentco_mcp_server.py"],
+      "env": {
+        "DJANGO_SETTINGS_MODULE": "talentco.settings"
+      }
+    }
+  ]
+}
+
+

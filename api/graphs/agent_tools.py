@@ -1698,3 +1698,251 @@ try:
     ALL_AGENT_TOOLS[:] = EMPLOYER_TOOLS + CANDIDATE_TOOLS
 except Exception:
     pass
+
+
+# ===============================
+# DISCOVERY & BATCH TOOLS (for Chat UI)
+# ===============================
+class ListProfilesInput(BaseModel):
+    limit: Optional[int] = Field(default=20, description="Max profiles to list")
+    search: Optional[str] = Field(default=None, description="Optional text search (name/email)")
+
+
+class ListProfilesTool(BaseTool):
+    name: str = "list_profiles"
+    description: str = "List profiles (optionally filtered). Shows id, name, email for quick selection."
+    args_schema: type[BaseModel] = ListProfilesInput
+
+    async def _arun(self, limit: Optional[int] = 20, search: Optional[str] = None, run_manager: Optional[AsyncCallbackManagerForToolRun] = None) -> str:
+        from asgiref.sync import sync_to_async
+        from apps.profiles.models import Profile
+        def q():
+            qs = Profile.objects.all().order_by('-created_at')
+            if search:
+                qs = qs.filter(first_name__icontains=search) | qs.filter(last_name__icontains=search) | qs.filter(email__icontains=search)
+            return list(qs[: (limit or 20)])
+        rows = await sync_to_async(q)()
+        if not rows:
+            return "No profiles found."
+        lines = [f"{p.first_name} {p.last_name} <{p.email}> id={p.id}" for p in rows]
+        return "\n".join(lines)
+
+    def _run(self, *args, **kwargs) -> str:
+        return "Use async execution (_arun)."
+
+
+class ListOpportunitiesInput(BaseModel):
+    limit: Optional[int] = Field(default=20, description="Max opportunities to list")
+    search: Optional[str] = Field(default=None, description="Optional text search (title/org)")
+
+
+class ListOpportunitiesTool(BaseTool):
+    name: str = "list_opportunities"
+    description: str = "List opportunities (optionally filtered). Shows id, title, organisation, and counts."
+    args_schema: type[BaseModel] = ListOpportunitiesInput
+
+    async def _arun(self, limit: Optional[int] = 20, search: Optional[str] = None, run_manager: Optional[AsyncCallbackManagerForToolRun] = None) -> str:
+        from asgiref.sync import sync_to_async
+        from apps.opportunities.models import Opportunity
+        from django.db.models import Count
+        def q():
+            qs = Opportunity.objects.select_related('organisation').annotate(
+                questions_count=Count('questions'), skills_count=Count('opportunity_skills')
+            ).order_by('-created_at')
+            if search:
+                qs = qs.filter(title__icontains=search) | qs.filter(organisation__name__icontains=search)
+            return list(qs[: (limit or 20)])
+        rows = await sync_to_async(q)()
+        if not rows:
+            return "No opportunities found."
+        lines = [f"{o.title} @ {o.organisation.name} id={o.id} (Q:{getattr(o,'questions_count',0)} S:{getattr(o,'skills_count',0)})" for o in rows]
+        return "\n".join(lines)
+
+    def _run(self, *args, **kwargs) -> str:
+        return "Use async execution (_arun)."
+
+
+class ListApplicationsForProfileInput(BaseModel):
+    profile_id: str = Field(description="Profile UUID")
+    status: Optional[str] = Field(default=None, description="Optional status filter")
+    limit: Optional[int] = Field(default=50, description="Max to list")
+
+
+class ListApplicationsForProfileTool(BaseTool):
+    name: str = "list_applications_for_profile"
+    description: str = "List applications for a profile with stage/status summary."
+    args_schema: type[BaseModel] = ListApplicationsForProfileInput
+
+    async def _arun(self, profile_id: str, status: Optional[str] = None, limit: Optional[int] = 50, run_manager: Optional[AsyncCallbackManagerForToolRun] = None) -> str:
+        from asgiref.sync import sync_to_async
+        from apps.applications.models import Application
+        def q():
+            qs = Application.objects.select_related('opportunity__organisation','current_stage_instance__stage_template').filter(profile_id=profile_id).order_by('-applied_at')
+            if status:
+                qs = qs.filter(status=status)
+            return list(qs[: (limit or 50)])
+        apps = await sync_to_async(q)()
+        if not apps:
+            return "No applications for this profile."
+        lines = [
+            f"{a.opportunity.title} @ {a.opportunity.organisation.name} id={a.id} status={a.status} stage={(a.current_stage_instance.stage_template.slug if a.current_stage_instance else 'none')}"
+            for a in apps
+        ]
+        return "\n".join(lines)
+
+    def _run(self, *args, **kwargs) -> str:
+        return "Use async execution (_arun)."
+
+
+class ListApplicationsForOpportunityInput(BaseModel):
+    opportunity_id: str = Field(description="Opportunity UUID")
+    status: Optional[str] = Field(default=None, description="Optional status filter")
+    limit: Optional[int] = Field(default=50, description="Max to list")
+
+
+class ListApplicationsForOpportunityTool(BaseTool):
+    name: str = "list_applications_for_opportunity"
+    description: str = "List applications for an opportunity with stage/status summary."
+    args_schema: type[BaseModel] = ListApplicationsForOpportunityInput
+
+    async def _arun(self, opportunity_id: str, status: Optional[str] = None, limit: Optional[int] = 50, run_manager: Optional[AsyncCallbackManagerForToolRun] = None) -> str:
+        from asgiref.sync import sync_to_async
+        from apps.applications.models import Application
+        def q():
+            qs = Application.objects.select_related('profile','current_stage_instance__stage_template').filter(opportunity_id=opportunity_id).order_by('-applied_at')
+            if status:
+                qs = qs.filter(status=status)
+            return list(qs[: (limit or 50)])
+        apps = await sync_to_async(q)()
+        if not apps:
+            return "No applications for this opportunity."
+        lines = [
+            f"{a.profile.first_name} {a.profile.last_name} id={a.id} status={a.status} stage={(a.current_stage_instance.stage_template.slug if a.current_stage_instance else 'none')}"
+            for a in apps
+        ]
+        return "\n".join(lines)
+
+    def _run(self, *args, **kwargs) -> str:
+        return "Use async execution (_arun)."
+
+
+class GetApplicationInput(BaseModel):
+    application_id: str = Field(description="Application UUID")
+
+
+class GetApplicationDetailsTool(BaseTool):
+    name: str = "get_application_details"
+    description: str = "Show full details for an application (answers, interviews)."
+    args_schema: type[BaseModel] = GetApplicationInput
+
+    async def _arun(self, application_id: str, run_manager: Optional[AsyncCallbackManagerForToolRun] = None) -> str:
+        from asgiref.sync import sync_to_async
+        from apps.applications.models import Application
+        def q():
+            return Application.objects.select_related('profile','opportunity__organisation','current_stage_instance__stage_template').prefetch_related('answers__question','interviews').get(id=application_id)
+        try:
+            a = await sync_to_async(q)()
+        except Exception:
+            return f"Application {application_id} not found."
+        lines = [
+            f"Application {a.id}",
+            f"Status: {a.status} | Stage: {(a.current_stage_instance.stage_template.slug if a.current_stage_instance else 'none')}",
+            f"Profile: {a.profile.first_name} {a.profile.last_name} <{a.profile.email}>",
+            f"Opportunity: {a.opportunity.title} @ {a.opportunity.organisation.name}",
+            "Answers:",
+        ]
+        for ans in a.answers.all():
+            lines.append(f"- Q({ans.question.question_type}) {'*' if ans.question.is_required else ''} {ans.question.question_text} -> disq={ans.is_disqualifying}")
+        lines.append("Interviews:")
+        for iv in a.interviews.all():
+            lines.append(f"- {iv.round_name} {iv.scheduled_start.isoformat()} - {iv.scheduled_end.isoformat()} {iv.location_type} outcome={iv.outcome}")
+        return "\n".join(lines)
+
+    def _run(self, *args, **kwargs) -> str:
+        return "Use async execution (_arun)."
+
+
+class UpsertScreeningQuestionSimpleInput(BaseModel):
+    opportunity_id: str = Field(description="Opportunity UUID")
+    question_text: str = Field(description="Question text")
+    question_type: str = Field(description="text|boolean|single_choice|multi_choice|number")
+    is_required: Optional[bool] = Field(default=False)
+    order: Optional[int] = Field(default=None)
+    config: Optional[Dict[str, Any]] = Field(default=None)
+    id: Optional[str] = Field(default=None, description="Existing question ID to update")
+
+
+class UpsertScreeningQuestionSimpleTool(BaseTool):
+    name: str = "upsert_screening_question_simple"
+    description: str = "Convenience wrapper to create/update a screening question using flat args."
+    args_schema: type[BaseModel] = UpsertScreeningQuestionSimpleInput
+
+    async def _arun(self, opportunity_id: str, question_text: str, question_type: str, is_required: Optional[bool] = False, order: Optional[int] = None, config: Optional[Dict[str, Any]] = None, id: Optional[str] = None, run_manager: Optional[AsyncCallbackManagerForToolRun] = None) -> str:
+        from asgiref.sync import sync_to_async
+        from apps.applications.services import ApplicationService
+        service = ApplicationService()
+        payload = {
+            'id': id,
+            'question_text': question_text,
+            'question_type': question_type,
+            'is_required': is_required,
+            'order': order,
+            'config': config or {},
+        }
+        try:
+            saved = await sync_to_async(service.upsert_screening_question)(opportunity_id, payload)
+            return f"Question saved: id={saved.id} type={saved.question_type} required={saved.is_required}"
+        except Exception as e:
+            return f"Failed to save question: {e}"
+
+    def _run(self, *args, **kwargs) -> str:
+        return "Use async execution (_arun)."
+
+
+class BulkChangeStageInput(BaseModel):
+    application_ids: List[str] = Field(description="List of application UUIDs")
+    stage_slug: str = Field(description="Target stage slug (aliases supported)")
+
+
+class BulkChangeStageTool(BaseTool):
+    name: str = "bulk_change_stage"
+    description: str = "Batch move multiple applications to a new stage; returns successes and failures."
+    args_schema: type[BaseModel] = BulkChangeStageInput
+
+    async def _arun(self, application_ids: List[str], stage_slug: str, run_manager: Optional[AsyncCallbackManagerForToolRun] = None) -> str:
+        from asgiref.sync import sync_to_async
+        from apps.applications.services import ApplicationService
+        service = ApplicationService()
+        successes = []
+        failures = []
+        for app_id in application_ids:
+            try:
+                app = await sync_to_async(service.change_stage)(app_id, stage_slug)
+                successes.append(f"{app_id} -> {app.status} ({app.current_stage_instance.stage_template.slug if app.current_stage_instance else 'none'})")
+            except Exception as e:
+                failures.append(f"{app_id} ! {e}")
+        summary = [f"Succeeded: {len(successes)}", *successes, f"Failed: {len(failures)}", *failures]
+        return "\n".join(summary)
+
+    def _run(self, *args, **kwargs) -> str:
+        return "Use async execution (_arun)."
+
+
+# Register discovery/batch tools into role collections
+try:
+    EMPLOYER_TOOLS.extend([
+        ListProfilesTool(),
+        ListOpportunitiesTool(),
+        ListApplicationsForProfileTool(),
+        ListApplicationsForOpportunityTool(),
+        GetApplicationDetailsTool(),
+        UpsertScreeningQuestionSimpleTool(),
+        BulkChangeStageTool(),
+    ])
+    CANDIDATE_TOOLS.extend([
+        ListOpportunitiesTool(),
+        ListApplicationsForProfileTool(),
+    ])
+    ALL_AGENT_TOOLS[:] = EMPLOYER_TOOLS + CANDIDATE_TOOLS
+except Exception:
+    pass

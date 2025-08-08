@@ -37,6 +37,7 @@ dependencies = [
     "numpy>=2.2.1",
     "factory-boy>=3.3.3",
     "scikit-learn>=1.7.1",
+    "mcp>=1.12.4",
 ]
 
 [build-system]
