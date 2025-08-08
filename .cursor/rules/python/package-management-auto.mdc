@@ -12,6 +12,19 @@ alwaysApply: false
 - ALWAYS include both dependency installation AND project package installation
 - WHEN seeing ModuleNotFoundError in containers, check if project was installed as package
 
+## Package Management Tools
+- ALWAYS use `uv` instead of `pip` for dependency management when uv.lock exists
+- ALWAYS activate virtual environment before running Python commands: `cd api && source .venv/bin/activate`
+- PREFER `uv add <package>` over `pip install <package>` for adding dependencies
+- PREFER `uv sync` over `pip install -r requirements.txt` for installing dependencies
+- ALWAYS check for `.venv/` directory and activate it before Python operations
+
+## Virtual Environment Activation
+- WHEN running Python commands, ALWAYS prefix with virtual environment activation
+- PATTERN: `cd api && source .venv/bin/activate && <python-command>`
+- VERIFY virtual environment is active by checking prompt shows `(api)` or similar
+- NEVER run Python package operations without activating virtual environment first
+
 ## Version Management
 - ALWAYS pin dependency versions in production (use lockfiles)
 - NEVER rely on "latest" or unpinned versions in Dockerfiles
@@ -26,6 +39,13 @@ alwaysApply: false
 ## Examples
 
 <example>
+# Good dependency management with uv
+cd api && source .venv/bin/activate && uv add "django>=4.2.0,<5.0"
+cd api && source .venv/bin/activate && uv sync
+cd api && source .venv/bin/activate && python manage.py migrate
+</example>
+
+<example>
 # Good pyproject.toml pattern
 [project]
 dependencies = [
@@ -36,6 +56,12 @@ dependencies = [
 </example>
 
 <example type="invalid">
+# Bad - using pip instead of uv
+pip install django  # Should use: uv add django
+
+# Bad - not activating virtual environment
+python manage.py migrate  # Should use: cd api && source .venv/bin/activate && python manage.py migrate
+
 # Bad - unpinned versions
 dependencies = [
     "django",  # No version constraint
