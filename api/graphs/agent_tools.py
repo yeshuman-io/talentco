@@ -24,6 +24,21 @@ from apps.evaluations.services import EvaluationService
 from apps.profiles.models import Profile
 from apps.opportunities.models import Opportunity
 
+# Helper JSON envelopes for tool outputs
+import json as _json_helpers
+
+def _ok(data: dict, message: str = "") -> str:
+    return _json_helpers.dumps({"status": "ok", "data": data, "message": message})
+
+def _err(code: str, message: str, *, hints: list | None = None, fields: list | None = None, suggestions: dict | None = None) -> str:
+    return _json_helpers.dumps({
+        "status": "error",
+        "code": code,
+        "message": message,
+        "hints": hints or [],
+        "fields": fields or [],
+        "suggestions": suggestions or {},
+    })
 
 # ================================================================
 # EMPLOYER AGENT TOOLS - For hiring managers and recruiters
@@ -1101,3 +1116,585 @@ CANDIDATE_TOOLS = [
 
 # Combined tools for flexible agent configuration
 ALL_AGENT_TOOLS = EMPLOYER_TOOLS + CANDIDATE_TOOLS
+
+
+# ===============================
+# APPLICATIONS (ATS) TOOLS
+# ===============================
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any
+
+try:
+    from apps.applications.services import ApplicationService
+except Exception:
+    ApplicationService = None  # Avoid import error before migrations
+
+
+class CreateApplicationInput(BaseModel):
+    profile_id: str = Field(description="UUID of the profile applying")
+    opportunity_id: str = Field(description="UUID of the target opportunity")
+    source: Optional[str] = Field(default="direct", description="Application source")
+    answers: Optional[List[Dict[str, Any]]] = Field(default=None, description="Screening answers payload")
+
+
+class CreateApplicationTool(BaseTool):
+    name: str = "create_application_for_profile"
+    description: str = (
+        "Create an application for a profile against an opportunity; validates screening and snapshots evaluation.\n\n"
+        "Examples:\n"
+        "{\"profile_id\": \"PROFILE_UUID\", \"opportunity_id\": \"OPPORTUNITY_UUID\"}\n"
+        "{\"profile_id\": \"PROFILE_UUID\", \"opportunity_id\": \"OPPORTUNITY_UUID\", \"answers\": ["
+        "{\"question_id\": \"Q_UUID\", \"answer_text\": \"10\"}]}"
+    )
+    args_schema: type[BaseModel] = CreateApplicationInput
+
+    async def _arun(
+        self,
+        profile_id: str,
+        opportunity_id: str,
+        source: str = "direct",
+        answers: Optional[List[Dict[str, Any]]] = None,
+        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+    ) -> str:
+        if ApplicationService is None:
+            return _err("unavailable", "Applications service unavailable. Ensure migrations are applied.")
+        service = ApplicationService()
+        from asgiref.sync import sync_to_async
+        result = await sync_to_async(service.create_application)(profile_id, opportunity_id, source, answers)
+        app = result.application
+        return _ok({
+            "application_id": str(app.id),
+            "status": app.status,
+            "result": "created" if result.created else "already_exists"
+        }, message="Application created" if result.created else "Application already exists")
+
+    def _run(self, *args, **kwargs) -> str:
+        return "This tool requires async execution. Use _arun method."
+
+
+class ChangeApplicationStageInput(BaseModel):
+    application_id: str = Field(description="UUID of the application")
+    stage_slug: str = Field(description="Slug of the target stage template (global)")
+
+
+class ChangeApplicationStageTool(BaseTool):
+    name: str = "change_application_stage"
+    description: str = (
+        "Move application to a new stage (free-form; logs history and updates status). Aliases accepted: under-review → in_review, in-review → in_review.\n\n"
+        "Example: {\"application_id\": \"APP_UUID\", \"stage_slug\": \"under-review\"}"
+    )
+    args_schema: type[BaseModel] = ChangeApplicationStageInput
+
+    async def _arun(
+        self,
+        application_id: str,
+        stage_slug: str,
+        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+    ) -> str:
+        if ApplicationService is None:
+            return _err("unavailable", "Applications service unavailable. Ensure migrations are applied.")
+        service = ApplicationService()
+        from asgiref.sync import sync_to_async
+        try:
+            app = await sync_to_async(service.change_stage)(application_id, stage_slug)
+            return _ok({
+                "application_id": str(app.id),
+                "status": app.status,
+                "current_stage": app.current_stage_instance.stage_template.slug if app.current_stage_instance else None,
+            }, message="Stage changed")
+        except Exception as e:
+            # Suggest stages if slug invalid or not seeded
+            from apps.applications.models import StageTemplate
+            def list_slugs():
+                return [s.slug for s in StageTemplate.objects.order_by("order").all()]
+            slugs = await sync_to_async(list_slugs)()
+            return _err(
+                "change_failed",
+                f"Failed to change stage: {str(e)}",
+                hints=["Ensure stages are seeded via seed_default_stages", "Use one of the available slugs"],
+                suggestions={"available_slugs": slugs, "aliases": {"under-review": "in_review", "in-review": "in_review"}},
+            )
+
+    def _run(self, *args, **kwargs) -> str:
+        return "This tool requires async execution. Use _arun method."
+
+
+class RecordApplicationDecisionInput(BaseModel):
+    application_id: str = Field(description="UUID of the application")
+    status: str = Field(description="Decision status: hired|rejected|offer")
+    reason: Optional[str] = Field(default=None, description="Optional free-text reason")
+
+
+class RecordApplicationDecisionTool(BaseTool):
+    name: str = "decision_application"
+    description: str = "Record a hiring decision (hired/rejected/offer) with optional reason."
+    args_schema: type[BaseModel] = RecordApplicationDecisionInput
+
+    async def _arun(
+        self,
+        application_id: str,
+        status: str,
+        reason: Optional[str] = None,
+        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+    ) -> str:
+        if ApplicationService is None:
+            return _err("unavailable", "Applications service unavailable. Ensure migrations are applied.")
+        service = ApplicationService()
+        from asgiref.sync import sync_to_async
+        app = await sync_to_async(service.record_decision)(application_id, status, reason)
+        return _ok({
+            "application_id": str(app.id),
+            "status": app.status,
+        }, message="Decision recorded")
+
+    def _run(self, *args, **kwargs) -> str:
+        return "This tool requires async execution. Use _arun method."
+
+
+# Update input schema to accept flat fields or nested question
+class UpsertScreeningQuestionInput(BaseModel):
+    opportunity_id: str = Field(description="UUID of the opportunity")
+    # Either provide full question dict OR flat fields below
+    question: Optional[Dict[str, Any]] = Field(default=None, description="Full question payload (preferred)")
+    id: Optional[str] = Field(default=None, description="Existing question ID (for update)")
+    question_text: Optional[str] = Field(default=None)
+    question_type: Optional[str] = Field(default=None, description="text|boolean|single_choice|multi_choice|number")
+    is_required: Optional[bool] = Field(default=None)
+    order: Optional[int] = Field(default=None)
+    config: Optional[Dict[str, Any]] = Field(default=None)
+
+
+class UpsertScreeningQuestionTool(BaseTool):
+    name: str = "upsert_screening_question"
+    description: str = (
+        "Create or update a screening question for an opportunity. Accepts either a nested 'question' object or flat fields.\n\n"
+        "Examples (nested):\n"
+        "{\"opportunity_id\": \"OPP_UUID\", \"question\": {\"question_text\": \"Visa needed?\", \"question_type\": \"boolean\", \"is_required\": false, \"order\": 1, \"config\": {\"disqualify_when\": true}}}\n\n"
+        "Examples (flat):\n"
+        "{\"opportunity_id\": \"OPP_UUID\", \"question_text\": \"Years exp?\", \"question_type\": \"number\", \"is_required\": true, \"order\": 2, \"config\": {\"min\": 3}}"
+    )
+    args_schema: type[BaseModel] = UpsertScreeningQuestionInput
+
+    async def _arun(
+        self,
+        opportunity_id: str,
+        question: Optional[Dict[str, Any]] = None,
+        id: Optional[str] = None,
+        question_text: Optional[str] = None,
+        question_type: Optional[str] = None,
+        is_required: Optional[bool] = None,
+        order: Optional[int] = None,
+        config: Optional[Dict[str, Any]] = None,
+        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+    ) -> str:
+        if ApplicationService is None:
+            return _err("unavailable", "Applications service unavailable. Ensure migrations are applied.")
+        # Build payload forgivingly
+        q = dict(question) if isinstance(question, dict) else {}
+        # Flat fields take precedence if provided
+        if id is not None:
+            q["id"] = id
+        if question_text is not None:
+            q["question_text"] = question_text
+        if question_type is not None:
+            q["question_type"] = question_type
+        if is_required is not None:
+            q["is_required"] = is_required
+        if order is not None:
+            q["order"] = order
+        if config is not None:
+            q["config"] = config
+
+        # Normalize type aliases
+        if "question_type" in q and isinstance(q["question_type"], str):
+            qt = q["question_type"].strip().lower().replace("-", "_")
+            alias = {
+                "single": "single_choice",
+                "multi": "multi_choice",
+                "numeric": "number",
+                "int": "number",
+            }
+            q["question_type"] = alias.get(qt, qt)
+
+        # Validate required fields for create
+        missing = []
+        if not q.get("id") and not q.get("question_text"):
+            missing.append("question_text")
+        if not q.get("id") and not q.get("question_type"):
+            missing.append("question_type")
+        if missing:
+            return _err(
+                "missing_field",
+                "Missing required fields to create question",
+                fields=missing,
+                hints=["Provide nested 'question' or flat fields (question_text, question_type)", "See examples in description"],
+                suggestions={
+                    "allowed_values": {"question_type": ["text","boolean","single_choice","multi_choice","number"]},
+                    "example_flat": {
+                        "opportunity_id": opportunity_id,
+                        "question_text": "Why you?",
+                        "question_type": "text",
+                        "is_required": True,
+                        "order": 1
+                    }
+                }
+            )
+
+        from asgiref.sync import sync_to_async
+        service = ApplicationService()
+        try:
+            saved = await sync_to_async(service.upsert_screening_question)(opportunity_id, q)
+        except Exception as e:
+            return _err("upsert_failed", f"Failed to save question: {str(e)}")
+
+        return _ok({
+            "id": str(saved.id),
+            "question_text": saved.question_text,
+            "question_type": saved.question_type,
+            "is_required": saved.is_required,
+            "order": saved.order,
+            "config": saved.config,
+        }, message="Question saved")
+
+    def _run(self, *args, **kwargs) -> str:
+        return "This tool requires async execution. Use _arun method."
+
+
+class DeleteScreeningQuestionInput(BaseModel):
+    question_id: str = Field(description="UUID of the question to delete")
+
+
+class DeleteScreeningQuestionTool(BaseTool):
+    name: str = "delete_screening_question"
+    description: str = "Delete a screening question."
+    args_schema: type[BaseModel] = DeleteScreeningQuestionInput
+
+    async def _arun(
+        self,
+        question_id: str,
+        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+    ) -> str:
+        if ApplicationService is None:
+            return _err("unavailable", "Applications service unavailable. Ensure migrations are applied.")
+        service = ApplicationService()
+        from asgiref.sync import sync_to_async
+        try:
+            await sync_to_async(service.delete_screening_question)(question_id)
+            return _ok({"question_id": question_id}, message="Question deleted")
+        except Exception as e:
+            return _err("delete_failed", f"Failed to delete question: {str(e)}")
+
+    def _run(self, *args, **kwargs) -> str:
+        return "This tool requires async execution. Use _arun method."
+
+
+class SubmitApplicationAnswersInput(BaseModel):
+    application_id: str = Field(description="UUID of the application")
+    answers: List[Dict[str, Any]] = Field(description="Answers payload")
+
+
+class SubmitApplicationAnswersTool(BaseTool):
+    name: str = "submit_application_answers"
+    description: str = (
+        "Submit or update screening answers for an application. Provide answer_text for text/boolean/number, or answer_options for choices.\n\n"
+        "Examples:\n"
+        "{\"application_id\": \"APP_UUID\", \"answers\": [{\"question_id\": \"Q1\", \"answer_text\": true}, {\"question_id\": \"Q2\", \"answer_options\": [\"Citizen/PR\"]}]}"
+    )
+    args_schema: type[BaseModel] = SubmitApplicationAnswersInput
+
+    async def _arun(
+        self,
+        application_id: str,
+        answers: List[Dict[str, Any]],
+        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+    ) -> str:
+        if ApplicationService is None:
+            return _err("unavailable", "Applications service unavailable. Ensure migrations are applied.")
+        # Coerce common types
+        def _coerce(v):
+            if isinstance(v, str):
+                vl = v.strip().lower()
+                if vl in ("true", "yes"): return True
+                if vl in ("false", "no"): return False
+            return v
+        coerced = []
+        for a in answers:
+            aa = dict(a)
+            if "answer_text" in aa:
+                aa["answer_text"] = _coerce(aa["answer_text"])  # bool/number strings tolerated
+            coerced.append(aa)
+
+        from asgiref.sync import sync_to_async
+        service = ApplicationService()
+        try:
+            objs = await sync_to_async(service.submit_answers)(application_id, coerced)
+        except Exception as e:
+            return _err("submit_failed", f"Failed to submit answers: {str(e)}")
+
+        return _ok({
+            "application_id": application_id,
+            "count": len(objs),
+            "answers": [
+                {
+                    "id": str(o.id),
+                    "question_id": str(o.question_id),
+                    "is_disqualifying": o.is_disqualifying,
+                } for o in objs
+            ]
+        }, message="Answers submitted")
+
+    def _run(self, *args, **kwargs) -> str:
+        return "This tool requires async execution. Use _arun method."
+
+
+# Register ATS tools into role collections
+try:
+    EMPLOYER_TOOLS.extend([
+        UpsertScreeningQuestionTool(),
+        DeleteScreeningQuestionTool(),
+        ChangeApplicationStageTool(),
+        RecordApplicationDecisionTool(),
+    ])
+    CANDIDATE_TOOLS.extend([
+        CreateApplicationTool(),
+        SubmitApplicationAnswersTool(),
+    ])
+    # Super/general agent gets both via ALL_AGENT_TOOLS
+    ALL_AGENT_TOOLS[:] = EMPLOYER_TOOLS + CANDIDATE_TOOLS
+except Exception:
+    pass
+
+
+# Zero-arg schema for tools that take no input
+class _EmptyArgs(BaseModel):
+    pass
+
+class SeedStagesTool(BaseTool):
+    name: str = "seed_default_stages"
+    description: str = "Create global default stages if missing (applied, in_review, interview, offer, hired, rejected, withdrawn)."
+    args_schema: type[BaseModel] = _EmptyArgs
+
+    async def _arun(self, run_manager: Optional[AsyncCallbackManagerForToolRun] = None) -> str:
+        if ApplicationService is None:
+            return _err("unavailable", "Applications service unavailable. Ensure migrations are applied.")
+        service = ApplicationService()
+        from asgiref.sync import sync_to_async
+        try:
+            stages = await sync_to_async(service.seed_default_stages)()
+            return _ok({
+                "count": len(stages),
+                "slugs": [s.slug for s in stages]
+            }, message="Seeded/ensured stages")
+        except Exception as e:
+            return _err("seed_failed", f"Failed to seed stages: {str(e)}")
+
+    def _run(self, *args, **kwargs) -> str:
+        return "This tool requires async execution. Use _arun method."
+
+
+class ListStagesTool(BaseTool):
+    name: str = "list_stages"
+    description: str = "List global stage templates in order."
+    args_schema: type[BaseModel] = _EmptyArgs
+
+    async def _arun(self, run_manager: Optional[AsyncCallbackManagerForToolRun] = None) -> str:
+        if ApplicationService is None:
+            return _err("unavailable", "Applications service unavailable. Ensure migrations are applied.")
+        service = ApplicationService()
+        from asgiref.sync import sync_to_async
+        try:
+            stages = await sync_to_async(service.list_stages)()
+            return _ok({
+                "count": len(stages),
+                "stages": [
+                    {
+                        "id": str(s.id),
+                        "slug": s.slug,
+                        "name": s.name,
+                        "order": s.order,
+                        "is_terminal": s.is_terminal,
+                    } for s in stages
+                ]
+            }, message="Stages listed")
+        except Exception as e:
+            return _err("list_failed", f"Failed to list stages: {str(e)}")
+
+    def _run(self, *args, **kwargs) -> str:
+        return "This tool requires async execution. Use _arun method."
+
+
+class UpsertStageInput(BaseModel):
+    id: Optional[str] = Field(default=None, description="Stage ID to update (optional)")
+    slug: Optional[str] = Field(default=None, description="Stage slug (required if creating)")
+    name: Optional[str] = Field(default=None, description="Display name")
+    order: Optional[int] = Field(default=None, description="Ordering value")
+    is_terminal: Optional[bool] = Field(default=None, description="Terminal stage flag")
+
+
+class UpsertStageTool(BaseTool):
+    name: str = "upsert_stage"
+    description: str = "Create or update a stage template by id or slug."
+    args_schema: type[BaseModel] = UpsertStageInput
+
+    async def _arun(
+        self,
+        id: Optional[str] = None,
+        slug: Optional[str] = None,
+        name: Optional[str] = None,
+        order: Optional[int] = None,
+        is_terminal: Optional[bool] = None,
+        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+    ) -> str:
+        if ApplicationService is None:
+            return _err("unavailable", "Applications service unavailable. Ensure migrations are applied.")
+        service = ApplicationService()
+        from asgiref.sync import sync_to_async
+        try:
+            stage = await sync_to_async(service.upsert_stage_template)({
+                "id": id, "slug": slug, "name": name, "order": order, "is_terminal": is_terminal
+            })
+            return _ok({
+                "id": str(stage.id),
+                "slug": stage.slug,
+                "name": stage.name,
+                "order": stage.order,
+                "is_terminal": stage.is_terminal,
+            }, message="Stage saved")
+        except Exception as e:
+            return _err("upsert_failed", f"Failed to save stage: {str(e)}")
+
+    def _run(self, *args, **kwargs) -> str:
+        return "This tool requires async execution. Use _arun method."
+
+
+class DeleteStageInput(BaseModel):
+    identifier: str = Field(description="Stage id (UUID) or slug to delete")
+
+
+class DeleteStageTool(BaseTool):
+    name: str = "delete_stage"
+    description: str = "Delete a stage by id or slug."
+    args_schema: type[BaseModel] = DeleteStageInput
+
+    async def _arun(
+        self,
+        identifier: str,
+        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+    ) -> str:
+        if ApplicationService is None:
+            return _err("unavailable", "Applications service unavailable. Ensure migrations are applied.")
+        service = ApplicationService()
+        from asgiref.sync import sync_to_async
+        try:
+            count = await sync_to_async(service.delete_stage_template)(identifier)
+            return _ok({"count": count}, message="Stages deleted")
+        except Exception as e:
+            return _err("delete_failed", f"Failed to delete stages: {str(e)}")
+
+    def _run(self, *args, **kwargs) -> str:
+        return "This tool requires async execution. Use _arun method."
+
+
+class ScheduleInterviewInput(BaseModel):
+    application_id: str = Field(description="UUID of the application")
+    round_name: str = Field(description="Interview round name")
+    scheduled_start: str = Field(description="ISO datetime, e.g. 2025-08-09T10:00:00Z or without Z in local time")
+    scheduled_end: str = Field(description="ISO datetime, e.g. 2025-08-09T10:30:00Z")
+    location_type: Optional[str] = Field(default="virtual", description="virtual|onsite")
+    location_details: Optional[str] = Field(default="", description="Meeting link or address")
+
+
+class ScheduleInterviewTool(BaseTool):
+    name: str = "schedule_interview_minimal"
+    description: str = (
+        "Schedule a minimal interview for an application (round name, ISO datetimes, virtual/onsite).\n\n"
+        "Example: {\"application_id\": \"APP_UUID\", \"round_name\": \"Initial\", \"scheduled_start\": \"2025-08-09T10:00:00Z\", \"scheduled_end\": \"2025-08-09T10:30:00Z\", \"location_type\": \"virtual\"}"
+    )
+    args_schema: type[BaseModel] = ScheduleInterviewInput
+
+    async def _arun(
+        self,
+        application_id: str,
+        round_name: str,
+        scheduled_start: str,
+        scheduled_end: str,
+        location_type: str = "virtual",
+        location_details: str = "",
+        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+    ) -> str:
+        if ApplicationService is None:
+            return _err("unavailable", "Applications service unavailable. Ensure migrations are applied.")
+        from datetime import datetime
+        def parse_iso(s: str) -> datetime:
+            return datetime.fromisoformat(s.replace("Z", "+00:00")) if isinstance(s, str) else s
+        try:
+            start_dt = parse_iso(scheduled_start)
+            end_dt = parse_iso(scheduled_end)
+        except Exception:
+            return _err(
+                "invalid_datetime",
+                "scheduled_start and scheduled_end must be ISO datetimes",
+                hints=["Use e.g. 2025-08-09T10:00:00Z"],
+            )
+        service = ApplicationService()
+        from asgiref.sync import sync_to_async
+        try:
+            interview = await sync_to_async(service.schedule_interview_minimal)(
+                application_id, round_name, start_dt, end_dt, location_type, location_details
+            )
+        except Exception as e:
+            return _err("schedule_failed", f"Failed to schedule interview: {str(e)}")
+        return _ok({
+            "interview_id": str(interview.id),
+            "application_id": str(interview.application_id),
+            "round_name": interview.round_name,
+            "scheduled_start": interview.scheduled_start.isoformat(),
+            "scheduled_end": interview.scheduled_end.isoformat(),
+            "location_type": interview.location_type,
+        }, message="Interview scheduled")
+
+
+class ListScreeningQuestionsInput(BaseModel):
+    opportunity_id: str = Field(description="UUID of the opportunity")
+
+
+class ListScreeningQuestionsTool(BaseTool):
+    name: str = "list_screening_questions"
+    description: str = "List screening questions for an opportunity."
+    args_schema: type[BaseModel] = ListScreeningQuestionsInput
+
+    async def _arun(
+        self,
+        opportunity_id: str,
+        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+    ) -> str:
+        from asgiref.sync import sync_to_async
+        from apps.applications.models import OpportunityQuestion
+        def fetch(opp_id: str):
+            return list(
+                OpportunityQuestion.objects.filter(opportunity_id=opp_id).order_by("order").values(
+                    "id", "question_text", "question_type", "is_required", "order", "config"
+                )
+            )
+        rows = await sync_to_async(fetch)(opportunity_id)
+        if not rows:
+            return _ok({"opportunity_id": opportunity_id, "message": "No screening questions for this opportunity."})
+        lines = [f"{r['id']}: {r['question_type']} | required={r['is_required']} | {r['question_text']}" for r in rows]
+        return _ok({"opportunity_id": opportunity_id, "questions": lines})
+
+    def _run(self, *args, **kwargs) -> str:
+        return "This tool requires async execution. Use _arun method."
+
+
+try:
+    EMPLOYER_TOOLS.extend([
+        SeedStagesTool(),
+        ListStagesTool(),
+        UpsertStageTool(),
+        DeleteStageTool(),
+        ScheduleInterviewTool(),
+        ListScreeningQuestionsTool(),
+    ])
+    ALL_AGENT_TOOLS[:] = EMPLOYER_TOOLS + CANDIDATE_TOOLS
+except Exception:
+    pass

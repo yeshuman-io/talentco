@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     # Third party apps
     'mem0client',
     # Project apps
+    'apps.applications',
     'apps.api',
     'apps.skills',
     'apps.evaluations',
