@@ -1,0 +1,10 @@
+# Python build artifacts
+api/*.egg-info/
+**/__pycache__/
+*.pyc
+
+# uv artifacts
+.venv/
+
+# LangGraph dev
+api/langgraph-data/

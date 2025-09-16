@@ -1,0 +1,143 @@
+---
+description: Core engineering principles for clean, predictable code development
+globs: "*.py", "*.md", "*.yml", "*.yaml", "*.json"
+alwaysApply: true
+---
+
+# Core Engineering Principles
+
+## Absolute Prohibitions
+- NEVER use workarounds - if data model doesn't support requirement, propose proper changes
+- NEVER use temporary hardcoded values - no magic strings, regex detection, or display-only logic  
+- NEVER assume requirements - ask for clarification before implementing
+- NEVER prioritize demo aesthetics over architectural integrity
+- NEVER implement fake/simulated functionality when real implementation is possible
+- NEVER use placeholder logic with TODO comments instead of actual integration
+- NEVER return random values or hardcoded responses instead of calling real APIs
+- NEVER create fake business logic to "show how it would work" - implement or ask for requirements
+- NEVER use `random` outside of `apps/testing/` - all business logic must be deterministic and real
+
+## Implementation Standards
+- ALWAYS implement real API integrations when API keys and endpoints are available
+- ALWAYS use actual mathematical calculations over hardcoded approximations
+- ALWAYS store real data in database rather than generating fake data for display
+- WHEN implementing a service method, use real external calls (OpenAI, database queries, calculations)
+- WHEN uncertain about API availability, ask "Should I implement with real [API/service] calls?"
+
+## Data Model First
+- ALWAYS check if current data model supports requirement cleanly
+- WHEN data model is insufficient, propose specific changes for approval
+- NEVER implement business logic outside the domain model
+- ALWAYS keep codebase small and specific to actual requirements
+
+## Development Process
+1. **Understand the requirement** - What problem are we actually solving?
+2. **Check data model support** - Can current abstraction handle this cleanly?
+3. **Propose changes if needed** - "To support X, I need to add Y to the model. Approve?"
+4. **Implement only approved changes** - No extras, no assumptions
+5. **Show truth in output** - Display what the system actually contains
+
+## Communication
+- ALWAYS ask "Should I add X to support Y?" instead of just implementing
+- ALWAYS confirm the actual goal before writing code
+- WHEN unsure about requirements, ask specific questions
+- NEVER implement features that weren't explicitly requested
+
+## Examples
+
+<example>
+# Good - proposing data model change
+"To support skill categorization, I need to add a 'category' field to the Skill model. Should I proceed?"
+
+# Good - showing actual data
+Skills: API Integration, Biodiversity Assessment, Board Governance... (all 64)
+</example>
+
+<example type="invalid">
+# Bad - implementing workaround without asking
+# Using regex categorization instead of proper data model
+
+# Bad - assuming requirements
+# Adding features that weren't requested "to make it look better"
+
+# Bad - fake/simulated functionality
+def _llm_judge_evaluation(self, profile, opportunity):
+    # TODO: Implement LLM integration
+    import random
+    return random.uniform(0.6, 0.95), "Hardcoded reasoning"
+
+# Good - real implementation or asking for approval
+def _llm_judge_evaluation(self, profile, opportunity):
+    # Real OpenAI API call with actual prompts and parsing
+    return self.openai_client.chat.completions.create(...)
+</example>
+
+## Detection Patterns - Flag These Immediately
+```python
+# RED FLAGS - These patterns indicate fake/simulated code:
+import random  # Outside of apps/testing/
+TODO: Implement  # In production methods
+"mock_", "fake_", "placeholder_"  # Variable names
+random.uniform(), random.choice()  # In business logic
+if True: return "hardcoded"  # Fake conditionals
+
+# CONTEXT-DEPENDENT FLAGS - Investigate these:
+return 0.5  # Could be legitimate fallback OR fake score
+sleep(1)  # Could be rate limiting OR fake delay
+"sample_", "demo_", "test_"  # In production code paths
+```
+
+## Legitimate vs Fake - Key Distinctions
+```python
+# ✅ LEGITIMATE - Mathematical/business constants
+return 0.5  # No skills specified (business rule)
+return 1.0 - (years * 0.1)  # Temporal decay formula
+return max(0.0, min(1.0, score))  # Bounds clamping
+
+# ❌ FAKE - Simulated responses
+return random.uniform(0.6, 0.95)  # Fake scoring
+return "Looks good!" if True else "Needs work"  # Fake reasoning
+scores = [0.8, 0.6, 0.9]  # Hardcoded test data in production
+```
+
+## Advanced Anti-Fake Patterns
+```python
+# 🚨 SUBTLE FAKE PATTERNS - These slip through basic detection:
+
+# Display-only logic (not in data model)
+if "renewable" in skill.name.lower():  # Regex categorization
+    category = "Environmental"
+
+# Cosmetic features that mask missing data
+def get_trending_skills(): 
+    return random.sample(all_skills, 5)  # "Trending" is fake
+
+# Demo-ready shortcuts
+def calculate_culture_fit():
+    return 0.85  # Always high to make demos look good
+
+# Simulation instead of asking about real integration
+def send_notification(user, message):
+    logger.info(f"Would send: {message}")  # Fake sending
+    
+# Business logic outside domain model
+def categorize_by_industry(profile):
+    if any("climate" in exp.description for exp in profile.experiences):
+        return "Environmental Professional"  # Should be in DB
+```
+
+## The Real Test: Production Readiness
+**Before implementing ANY business logic, ask:**
+- **Would this method work identically in production?**
+- **Does this rely on the actual data model or fake enhancements?**
+- **Am I implementing what was requested or what looks good?**
+- **If the user saw this running live, would they trust the results?**
+
+## Enforcement Questions
+Before implementing any method, ask:
+1. **Is there a real API/service available?** → Use it
+2. **Can this be calculated mathematically?** → Calculate it  
+3. **Should this query the database?** → Query it
+4. **Am I making assumptions about requirements?** → Ask user
+5. **Would this work in production?** → If no, don't implement
+6. **Does this enhance the data model or just the display?** → Only enhance if requested

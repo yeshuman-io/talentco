@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { TalentCoLogoSVG } from "@/components/icons/talentco";
 import { Label } from "@/components/ui/label";
 import { ArrowRight } from "lucide-react";
+import { ThemeSwitcher } from "@/components/theme-switcher";
 import { PasswordInput } from "@/components/ui/password-input";
 import { getApiKey } from "@/lib/api-key";
 import { useThreads } from "./Thread";
@@ -164,7 +165,10 @@ export const StreamProvider: React.FC<{ children: ReactNode }> = ({
   if (!finalApiUrl || !finalAssistantId) {
     return (
       <div className="flex min-h-screen w-full items-center justify-center p-4">
-        <div className="animate-in fade-in-0 zoom-in-95 bg-background flex max-w-3xl flex-col rounded-lg border shadow-lg">
+        <div className="animate-in fade-in-0 zoom-in-95 bg-background flex max-w-3xl flex-col rounded-lg border shadow-lg relative">
+          <div className="absolute top-4 right-4">
+            <ThemeSwitcher />
+          </div>
           <div className="mt-14 flex flex-col gap-2 border-b p-6">
             <div className="flex flex-col items-start gap-2">
               <TalentCoLogoSVG width={147} height={32} />

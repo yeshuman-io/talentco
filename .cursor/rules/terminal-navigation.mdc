@@ -1,0 +1,111 @@
+# Terminal Navigation and Directory Management Rules
+
+## Critical Directory Navigation Rules
+
+### ALWAYS Check Terminal Prompt First
+- **`(api) api $`** = Already in `/talentco/api/` directory 
+- **`talentco $`** = In `/talentco/` (project root)
+- **Use prompt as source of truth** - don't assume directory location
+
+### Directory Navigation Patterns
+
+#### ✅ CORRECT Patterns
+```bash
+# When prompt shows "(api) api $" (already in api directory):
+source .venv/bin/activate && python manage.py COMMAND
+
+# When prompt shows "talentco $" (in project root):
+cd api && source .venv/bin/activate && python manage.py COMMAND
+```
+
+#### ❌ NEVER Do These
+```bash
+# When already in api directory - DON'T double-navigate:
+cd api && source .venv/bin/activate  # FAILS: no api/ subdirectory in api/
+
+# Don't assume directory without checking prompt:
+cd api  # Check prompt first!
+```
+
+### Environment Setup Rules
+
+#### Virtual Environment
+- **Check prompt for `(api)`** - indicates virtual env is active
+- **Only activate if not already active**: `source .venv/bin/activate`
+- **Virtual env binary path**: `.venv/bin/python` or `.venv/bin/activate`
+
+#### Environment Variables
+- **Automatically loaded**: Django settings now auto-loads .env file using python-dotenv
+- **No manual export needed**: OPENAI_API_KEY and database settings loaded automatically
+- **Just activate virtual env**: Only need to ensure virtual environment is active
+
+### TalentCo Project Specific Rules
+
+#### Django Management Commands
+```bash
+# Standard pattern for Django commands:
+source .venv/bin/activate && python manage.py COMMAND
+
+# Key commands:
+python manage.py generate_esg_data --profiles 8 --opportunities 5
+python manage.py generate_evaluations --llm-threshold 0.2
+python manage.py show_complete_system
+```
+
+#### File Paths
+- **Django project root**: `api/` directory
+- **Management commands**: `api/apps/*/management/commands/*.py`
+- **Environment file**: `api/.env`
+- **Virtual environment**: `api/.venv/`
+
+### Debugging Navigation Issues
+
+#### Verification Commands
+```bash
+pwd                    # Check current directory
+ls -la                # List contents to verify location
+echo $VIRTUAL_ENV     # Check if virtual env active
+```
+
+#### Common Error Patterns
+```bash
+# Error: "bash: cd: api: No such file or directory"
+# Cause: Already in api directory, trying to cd api again
+# Fix: Remove "cd api &&" from command
+
+# Error: "The api_key client option must be set"
+# Cause: .env file not found or OPENAI_API_KEY not set
+# Fix: Check .env file exists and contains OPENAI_API_KEY
+```
+
+### Command Execution Checklist
+
+Before running any Django command:
+1. **Check terminal prompt** - am I in the right directory?
+2. **Verify virtual env** - is `(api)` shown in prompt?
+3. **Activate if needed** - source .venv/bin/activate if not active
+4. **Use correct path** - relative to current directory
+
+### Error Recovery
+
+#### If "No such file or directory" for cd api:
+- You're already in the api directory
+- Remove `cd api &&` from your command
+- Use: `source .venv/bin/activate && python manage.py COMMAND`
+
+#### If "api_key must be set":
+- Check that .env file exists in api/ directory
+- Verify OPENAI_API_KEY is set in .env file
+- Restart Django (dotenv loads .env automatically on startup)
+
+#### If "command not found":
+- Virtual environment not activated
+- Add: `source .venv/bin/activate &&` before the command
+
+## Enforcement
+
+**MANDATORY**: Before any `run_terminal_cmd` that uses Django:
+1. Read the terminal prompt in the previous command output
+2. Determine current directory from prompt
+3. Choose correct navigation pattern based on location
+4. Always include environment setup for Django commands

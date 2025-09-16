@@ -14,6 +14,7 @@ import {
 } from "@/lib/ensure-tool-responses";
 import { TalentCoLogoSVG } from "../icons/talentco";
 import { TooltipIconButton } from "./tooltip-icon-button";
+import { ThemeSwitcher } from "../theme-switcher";
 import {
   ArrowDown,
   LoaderCircle,
@@ -234,7 +235,7 @@ export function Thread() {
     <div className="flex h-screen w-full overflow-hidden">
       <div className="relative hidden lg:flex">
         <motion.div
-          className="absolute z-20 h-full overflow-hidden border-r bg-white"
+          className="absolute z-20 h-full overflow-hidden border-r bg-background"
           style={{ width: 300 }}
           animate={
             isLargeScreen
@@ -300,7 +301,9 @@ export function Thread() {
                   </Button>
                 )}
               </div>
-
+              <div>
+                <ThemeSwitcher />
+              </div>
             </div>
           )}
           {chatStarted && (
@@ -341,6 +344,7 @@ export function Thread() {
               </div>
 
               <div className="flex items-center gap-4">
+                <ThemeSwitcher />
                 <TooltipIconButton
                   size="lg"
                   className="p-4"
@@ -400,7 +404,7 @@ export function Thread() {
                 </>
               }
               footer={
-                <div className="sticky bottom-0 flex flex-col items-center gap-8 bg-white">
+                <div className="sticky bottom-0 flex flex-col items-center gap-8 bg-background">
                   {!chatStarted && (
                     <div className="flex items-center gap-3">
                       <TalentCoLogoSVG width={147} height={32} className="flex-shrink-0" />

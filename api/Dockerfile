@@ -40,4 +40,4 @@ ENV PYTHONPATH=/app
 EXPOSE 8080
 
 # Run the same commands that work locally
-CMD ["sh", "-c", "python manage.py setup_pgvector && python manage.py migrate && uv run langgraph dev --host 0.0.0.0 --port $PORT"] 
+CMD ["sh", "-c", "python manage.py migrate && uv run langgraph dev --host 0.0.0.0 --port $PORT"] 
